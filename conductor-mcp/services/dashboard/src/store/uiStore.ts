@@ -6,13 +6,11 @@ type Theme = 'light' | 'dark' | 'system';
 
 interface UIState {
   theme: Theme;
-  sidebarOpen: boolean;
   taskModalId: string | null;
   activities: Activity[];
   wsConnected: boolean;
 
   setTheme: (theme: Theme) => void;
-  toggleSidebar: () => void;
   openTaskModal: (id: string) => void;
   closeTaskModal: () => void;
   addActivity: (activity: Activity) => void;
@@ -29,7 +27,6 @@ export const useUIStore = create<UIState>()(
   persist(
     (set) => ({
       theme: 'system',
-      sidebarOpen: true,
       taskModalId: null,
       activities: [],
       wsConnected: false,
@@ -38,7 +35,6 @@ export const useUIStore = create<UIState>()(
         set({ theme });
         applyTheme(theme);
       },
-      toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       openTaskModal: (id) => set({ taskModalId: id }),
       closeTaskModal: () => set({ taskModalId: null }),
       addActivity: (activity) =>
@@ -47,7 +43,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: 'conductor-ui',
-      partialize: (s) => ({ theme: s.theme, sidebarOpen: s.sidebarOpen }),
+      partialize: (s) => ({ theme: s.theme }),
       onRehydrateStorage: () => (state) => {
         if (state) applyTheme(state.theme);
       },

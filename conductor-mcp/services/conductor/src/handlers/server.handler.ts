@@ -11,7 +11,6 @@ import {
   checkHealth,
   findPort,
 } from '../utils/process-manager.js';
-import { nowISO } from '../utils/date.js';
 
 type EventPublisher = (event: string, data: unknown) => Promise<void>;
 const WORKSPACE = process.env.WORKSPACE_DIR || '/workspace';
