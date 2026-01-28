@@ -26,6 +26,7 @@ export const httpLogger = createLogger('HTTP');
 export const mcpLogger = createLogger('MCP');
 export const wsLogger = createLogger('WebSocket');
 export const taskLogger = createLogger('Task');
+export const taskHandlerLogger = createLogger('TaskHandler');
 export const serverLogger = createLogger('Server');
 export const registryLogger = createLogger('Registry');
 

@@ -46,20 +46,47 @@ const OUTPUT_STYLES = {
 };
 
 // Extract Final Result from pipeline output lines
-function extractFinalResult(lines: string[] | undefined): string | null {
-  if (!lines) return null;
+function extractFinalResultFromOutput(lines: string[] | undefined): string | null {
+  if (!lines || lines.length === 0) return null;
 
   for (const line of lines) {
     const { type, content } = parseOutputLine(line);
     if (type === 'complete' && content) {
-      // Remove the completion prefix emoji and extract result
-      const resultMatch = content.match(/✅[^]*?\n\n([\s\S]*)/);
-      if (resultMatch) {
-        return resultMatch[1].trim();
+      // Format: "✅ 작업 완료 (30.5초, $0.5775)\n\n{result}"
+      // Extract everything after the double newline
+      const parts = content.split('\n\n');
+      if (parts.length > 1) {
+        return parts.slice(1).join('\n\n').trim();
       }
-      return content.replace(/^✅\s*작업 완료[^]*?\)\s*/, '').trim();
+      // If no double newline, try to remove the prefix
+      const cleaned = content.replace(/^✅\s*작업 완료.*?\)\s*/, '').trim();
+      return cleaned || null;
     }
   }
+  return null;
+}
+
+// Extract Final Result from context file content
+function extractFinalResultFromContext(content: string | null): string | null {
+  if (!content) return null;
+
+  // Try multiple patterns to find final result
+  // Pattern 1: "### Final Result" section
+  const finalResultMatch = content.match(/### Final Result\s*\n([\s\S]*?)(?=\n##|$)/);
+  if (finalResultMatch) {
+    return finalResultMatch[1].trim();
+  }
+
+  // Pattern 2: Last "## Pipeline Output" section content
+  const pipelineMatch = content.match(/## Pipeline Output[^\n]*\n\n([\s\S]*?)(?=\n## |$)/);
+  if (pipelineMatch) {
+    const pipelineContent = pipelineMatch[1].trim();
+    // If it's not just "(no output)", return it
+    if (pipelineContent && pipelineContent !== '(no output)') {
+      return pipelineContent;
+    }
+  }
+
   return null;
 }
 
@@ -69,6 +96,7 @@ export function TaskModal() {
   const tasks = useTaskStore((s) => s.tasks);
   const fetchTasks = useTaskStore((s) => s.fetchTasks);
   const pipelineOutput = useTaskStore((s) => s.pipelineOutput);
+  const clearPipelineOutput = useTaskStore((s) => s.clearPipelineOutput);
   const [feedback, setFeedback] = useState('');
   const [loading, setLoading] = useState(false);
   const [contextContent, setContextContent] = useState<string | null>(null);
@@ -78,8 +106,8 @@ export function TaskModal() {
   const task = taskModalId ? tasks[taskModalId] : null;
   const liveOutput = taskModalId ? pipelineOutput[taskModalId] : undefined;
 
-  // Extract Final Result for REVIEW status
-  const finalResult = extractFinalResult(liveOutput);
+  // Extract Final Result for REVIEW status (try live output first, then context file)
+  const finalResult = extractFinalResultFromOutput(liveOutput) || extractFinalResultFromContext(contextContent);
 
   // Auto-scroll live output to bottom
   useEffect(() => {
@@ -139,18 +167,18 @@ export function TaskModal() {
   };
 
   const handleRerun = async () => {
-    if (!task) return;
+    if (!task || !feedback.trim()) {
+      toast.error('피드백을 입력해주세요');
+      return;
+    }
     setLoading(true);
     try {
-      // Include feedback if provided
-      if (feedback.trim()) {
-        await api.post(`/tasks/${task.id}/transition`, {
-          target_state: 'READY',
-          feedback: feedback.trim()
-        });
-      } else {
-        await api.post(`/tasks/${task.id}/transition`, { target_state: 'READY' });
-      }
+      // Clear previous pipeline output before rerun
+      clearPipelineOutput(task.id);
+      await api.post(`/tasks/${task.id}/transition`, {
+        target_state: 'READY',
+        feedback: feedback.trim()
+      });
       await api.post(`/tasks/${task.id}/run`);
       toast.success('AI가 작업을 다시 시작합니다');
       setFeedback('');
@@ -251,15 +279,21 @@ export function TaskModal() {
         )}
 
         {/* Final Result - shown in REVIEW status */}
-        {task.status === 'REVIEW' && finalResult && (
+        {task.status === 'REVIEW' && (
           <div className="border-t dark:border-gray-700 pt-4">
             <h3 className="flex items-center gap-2 font-medium mb-2 text-green-600 dark:text-green-400">
               <Check className="w-4 h-4" />
               Final Result
             </h3>
-            <div className="p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg overflow-auto max-h-64 prose prose-sm dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-table:text-xs max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalResult}</ReactMarkdown>
-            </div>
+            {finalResult ? (
+              <div className="p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg overflow-auto max-h-64 prose prose-sm dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-table:text-xs max-w-none">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalResult}</ReactMarkdown>
+              </div>
+            ) : (
+              <div className="p-4 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm text-gray-500">
+                AI 작업 결과는 아래 Pipeline Output에서 확인하세요.
+              </div>
+            )}
           </div>
         )}
 
@@ -309,7 +343,7 @@ export function TaskModal() {
             {/* Feedback Input - always visible, used for reject/rerun */}
             <div>
               <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">
-                피드백 (반려/재실행 시 사용)
+                피드백 (반려/재실행 시 필수)
               </label>
               <textarea
                 value={feedback}
@@ -342,7 +376,8 @@ export function TaskModal() {
               <Button
                 variant="warning"
                 onClick={handleRerun}
-                disabled={loading}
+                disabled={loading || !feedback.trim()}
+                title={!feedback.trim() ? '피드백을 입력해주세요' : ''}
               >
                 <RotateCcw className="w-4 h-4 mr-1" />
                 재실행

@@ -4,6 +4,7 @@ import { VALID_TRANSITIONS, STATUS_EMOJI, PRIORITY_EMOJI } from '../types/task.t
 import { readTaskRegistry, writeTaskRegistry, getTaskContextPath, getTaskDirPath, getCurrentProjectId } from '../utils/registry.js';
 import { nowISO, formatKorean, formatDateOnly, calculateDuration } from '../utils/date.js';
 import { ensureDir } from '../utils/file.js';
+import { taskHandlerLogger as log } from '../utils/logger.js';
 
 export type EventPublisher = (event: string, data: unknown) => Promise<void>;
 
@@ -254,13 +255,20 @@ Allowed: ${VALID_TRANSITIONS[task.status].join(', ') || 'none'}`,
   task.updated_at = now;
   if (input.target_state === 'DONE') task.completed_at = now;
   if (input.feedback) {
-    task.feedback_history.push({
+    const feedbackEntry = {
       id: `FB-${Date.now()}`,
       content: input.feedback,
       created_at: now,
       resolved: false,
       resolved_at: null,
-    });
+    };
+    task.feedback_history.push(feedbackEntry);
+    log.info({
+      taskId: task.id,
+      feedback: input.feedback,
+      feedbackId: feedbackEntry.id,
+      totalFeedback: task.feedback_history.length
+    }, 'Feedback added to task');
   }
 
   await writeTaskRegistry(registry);

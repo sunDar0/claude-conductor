@@ -119,8 +119,34 @@ export async function runAutoPipeline(taskId: string): Promise<void> {
     runningProjects.add(projectId);
     log.info({ taskId, workDir }, 'Invoking Claude CLI');
 
+    // Read previous output if this is a rerun with feedback
+    let previousOutput: string | undefined;
+    const unresolvedFeedback = task.feedback_history.filter(fb => !fb.resolved);
+    if (unresolvedFeedback.length > 0) {
+      try {
+        const contextPath = getTaskContextPath(taskId);
+        const contextContent = await fs.readFile(contextPath, 'utf-8');
+        // Extract the LAST Final Result (use global flag to find all, then take last one)
+        const finalResultMatches = contextContent.match(/### Final Result\s*\n([\s\S]*?)(?=\n---|$)/g);
+        if (finalResultMatches && finalResultMatches.length > 0) {
+          const lastFinalResult = finalResultMatches[finalResultMatches.length - 1];
+          previousOutput = lastFinalResult.replace(/### Final Result\s*\n/, '').trim();
+        } else {
+          // Fallback: get last Pipeline Output section
+          const pipelineMatches = contextContent.match(/## Pipeline Output[^\n]*\n\n([\s\S]*?)(?=\n## |$)/g);
+          if (pipelineMatches && pipelineMatches.length > 0) {
+            const lastMatch = pipelineMatches[pipelineMatches.length - 1];
+            previousOutput = lastMatch.replace(/## Pipeline Output[^\n]*\n\n/, '').trim();
+          }
+        }
+        log.info({ taskId, hasPreviousOutput: !!previousOutput, outputLength: previousOutput?.length }, 'Read previous output for feedback');
+      } catch (err) {
+        log.warn({ taskId, error: err }, 'Could not read previous output');
+      }
+    }
+
     // Build prompt for Claude CLI
-    const prompt = buildPrompt(task);
+    const prompt = await buildPrompt(task, previousOutput);
 
     // Run Claude CLI - will transition to IN_PROGRESS when first output received
     await runClaudeCLI(taskId, workDir, prompt, projectId);
@@ -147,13 +173,63 @@ async function processNextInQueue(projectId: string): Promise<void> {
   }
 }
 
-function buildPrompt(task: Task): string {
+async function buildPrompt(task: Task, previousOutput?: string): Promise<string> {
   const description = task.description || 'No description provided';
   const taskType = detectTaskType(task);
 
   // Build feedback section if there's previous feedback
   let feedbackSection = '';
   const unresolvedFeedback = task.feedback_history.filter(fb => !fb.resolved);
+
+  // Debug: Log feedback info
+  log.info({
+    taskId: task.id,
+    totalFeedback: task.feedback_history.length,
+    unresolvedCount: unresolvedFeedback.length,
+    feedbackContents: unresolvedFeedback.map(fb => fb.content),
+    hasPreviousOutput: !!previousOutput
+  }, 'Building prompt with feedback');
+
+  // If there's feedback AND previous output, this is a revision request
+  if (unresolvedFeedback.length > 0 && previousOutput) {
+    feedbackSection = `
+## 이전 작업 결과
+\`\`\`
+${previousOutput.substring(0, 5000)}${previousOutput.length > 5000 ? '\n... (truncated)' : ''}
+\`\`\`
+
+## 피드백 (반드시 반영해야 함)
+${unresolvedFeedback.map(fb => `- ${fb.content}`).join('\n')}
+
+**중요**: 위의 이전 작업 결과를 기반으로, 피드백을 반영하여 수정하세요.
+처음부터 다시 작업하지 말고, 기존 결과물을 개선하세요.
+`;
+
+    return `# Conductor 태스크 수정 요청
+
+## 태스크 정보
+- **ID**: ${task.id}
+- **제목**: ${task.title}
+- **설명**: ${description}
+${feedbackSection}
+## 수정 지침
+
+이전 작업이 완료되었으나 피드백이 있습니다. 다음을 수행하세요:
+
+1. **피드백 분석** - 무엇을 수정해야 하는지 파악
+2. **기존 결과물 기반으로 수정** - 처음부터 다시 하지 말 것
+3. **수정 사항 적용** - 피드백에서 요청한 부분만 수정
+4. **수정 내용 요약** - 무엇을 어떻게 수정했는지 설명
+
+## 중요 규칙
+- 피드백에서 언급하지 않은 부분은 그대로 유지
+- 불필요한 변경 최소화
+- **모든 출력과 문서는 한글로 작성**
+
+지금 수정을 시작하세요.`;
+  }
+
+  // First run or no feedback - original prompt
   if (unresolvedFeedback.length > 0) {
     feedbackSection = `
 ## Previous Feedback (MUST ADDRESS)
@@ -163,38 +239,39 @@ ${unresolvedFeedback.map(fb => `- ${fb.content} (${fb.created_at})`).join('\n')}
 `;
   }
 
-  return `# Conductor Task Execution
+  return `# Conductor 태스크 실행
 
-## Task Information
+## 태스크 정보
 - **ID**: ${task.id}
-- **Title**: ${task.title}
-- **Description**: ${description}
-- **Detected Type**: ${taskType}
+- **제목**: ${task.title}
+- **설명**: ${description}
+- **감지된 유형**: ${taskType}
 ${feedbackSection}
-## Execution Instructions
+## 실행 지침
 
-You are operating in **autopilot mode**. Follow these steps:
+**자동 파일럿 모드**로 작업합니다. 다음 단계를 따르세요:
 
-1. **Analyze the task** and determine what needs to be done
-2. **Delegate to appropriate specialist agents** based on task type:
-   - Code changes → use executor agent (oh-my-claudecode:executor)
-   - Documentation → use writer agent (oh-my-claudecode:writer)
-   - Code review → use code-reviewer agent (oh-my-claudecode:code-reviewer)
-   - UI/Frontend → use designer agent (oh-my-claudecode:designer)
-   - Testing → use test-agent
-   - Security review → use security-agent
+1. **태스크 분석** - 무엇을 해야 하는지 파악
+2. **적절한 전문 에이전트에 위임** (태스크 유형에 따라):
+   - 코드 변경 → executor 에이전트 (oh-my-claudecode:executor)
+   - 문서화 → writer 에이전트 (oh-my-claudecode:writer)
+   - 코드 리뷰 → code-reviewer 에이전트 (oh-my-claudecode:code-reviewer)
+   - UI/프론트엔드 → designer 에이전트 (oh-my-claudecode:designer)
+   - 테스트 → test-agent
+   - 보안 검토 → security-agent
 
-3. **Actually implement the changes** - do not just describe them
-4. **Verify the changes** work correctly
-5. **Summarize** what was changed
+3. **실제로 변경 사항을 구현** - 계획만 세우지 말고 실행
+4. **변경 사항이 올바르게 작동하는지 확인**
+5. **변경된 내용을 요약**
 
-## Important Rules
-- You MUST actually edit/write files to complete this task
-- Use the Task tool to delegate to specialized agents when appropriate
-- Do NOT just output a plan - execute it
-- After completion, provide a clear summary of changes made
+## 중요 규칙
+- 반드시 파일을 실제로 편집/작성해야 함
+- 적절한 경우 Task 도구를 사용하여 전문 에이전트에 위임
+- 계획만 출력하지 말고 실행할 것
+- 완료 후 변경 사항에 대한 명확한 요약 제공
+- **모든 출력과 문서는 한글로 작성**
 
-Begin execution now.`;
+지금 실행을 시작하세요.`;
 }
 
 function detectTaskType(task: Task): string {
@@ -310,7 +387,8 @@ function parseStreamEvent(line: string): { type: string; content: string } | nul
 // Extract human-readable output from stream-json for context file
 function extractReadableOutput(rawOutput: string): string {
   const lines = rawOutput.split('\n').filter(line => line.trim());
-  const readable: string[] = [];
+  const textResponses: string[] = [];
+  const toolCalls: string[] = [];
   let finalResult = '';
 
   for (const line of lines) {
@@ -320,10 +398,11 @@ function extractReadableOutput(rawOutput: string): string {
       if (event.type === 'assistant' && event.message?.content) {
         for (const item of event.message.content) {
           if (item.type === 'text' && item.text) {
-            readable.push(item.text);
+            // Keep all text responses
+            textResponses.push(item.text);
           }
           if (item.type === 'tool_use' && item.name) {
-            readable.push(`[Tool: ${item.name}]`);
+            toolCalls.push(item.name);
           }
         }
       }
@@ -336,9 +415,43 @@ function extractReadableOutput(rawOutput: string): string {
     }
   }
 
-  // Combine AI responses and final result
-  const summary = readable.slice(-10).join('\n\n'); // Keep last 10 entries to avoid huge files
-  return finalResult ? `${summary}\n\n---\n### Final Result\n${finalResult}` : summary;
+  // Build comprehensive output
+  const parts: string[] = [];
+
+  // Tools used summary
+  if (toolCalls.length > 0) {
+    const uniqueTools = [...new Set(toolCalls)];
+    parts.push(`**사용된 도구**: ${uniqueTools.join(', ')}`);
+  }
+
+  // All text responses (Claude's explanations and summaries)
+  if (textResponses.length > 0) {
+    // Keep all responses, but limit total length to 10000 chars
+    let totalLength = 0;
+    const keptResponses: string[] = [];
+
+    // Prioritize later responses (usually contain summary)
+    for (let i = textResponses.length - 1; i >= 0 && totalLength < 10000; i--) {
+      const resp = textResponses[i];
+      if (totalLength + resp.length <= 10000) {
+        keptResponses.unshift(resp);
+        totalLength += resp.length;
+      }
+    }
+
+    parts.push(keptResponses.join('\n\n'));
+  }
+
+  // Final result from Claude CLI
+  if (finalResult) {
+    parts.push(`---\n### Final Result\n${finalResult}`);
+  } else if (textResponses.length > 0) {
+    // If no explicit result, use last text response as final result
+    const lastResponse = textResponses[textResponses.length - 1];
+    parts.push(`---\n### Final Result\n${lastResponse}`);
+  }
+
+  return parts.join('\n\n') || '(no output)';
 }
 
 async function runClaudeCLI(taskId: string, workDir: string, prompt: string, projectId: string): Promise<void> {
@@ -373,8 +486,8 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
     let lineBuffer = '';
     let timeoutId: NodeJS.Timeout | null = null;
 
-    // Timeout after 5 minutes
-    const TIMEOUT_MS = 5 * 60 * 1000;
+    // Timeout after 1 hour
+    const TIMEOUT_MS = 60 * 60 * 1000;
     timeoutId = setTimeout(() => {
       log.warn({ taskId }, 'Timeout reached, killing process');
       claude.kill('SIGTERM');
@@ -541,6 +654,15 @@ export async function triggerPipeline(taskId: string): Promise<{ success: boolea
     // Transition to IN_PROGRESS immediately when user clicks play
     const registry = await readTaskRegistry();
     const task = registry.tasks[taskId];
+
+    // Debug: Log task state at trigger time
+    log.info({
+      taskId,
+      status: task?.status,
+      feedbackCount: task?.feedback_history?.length || 0,
+      feedbackContents: task?.feedback_history?.map(fb => ({ content: fb.content, resolved: fb.resolved }))
+    }, 'triggerPipeline: Task state at trigger');
+
     if (task && task.status === 'READY') {
       task.status = 'IN_PROGRESS';
       task.started_at = new Date().toISOString();
