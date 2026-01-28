@@ -1,0 +1,15 @@
+services:
+  conductor-mcp:
+    build:
+      context: ./services/conductor
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./services/conductor/src:/app/src:ro
+      - ./services/conductor/package.json:/app/package.json:ro
+      - conductor-data:/data/conductor
+      - ${PROJECT_ROOT:-.}:/workspace
+      - ${PROJECT_ROOT:-.}/.claude:/workspace/.claude
+    environment:
+      - NODE_ENV=development
+      - LOG_LEVEL=debug
+    command: pnpm dev
