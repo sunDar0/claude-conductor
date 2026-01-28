@@ -1,5 +1,5 @@
-import { Calendar, Check, Clock, FileText, GitBranch, RotateCcw, X, ChevronDown, ChevronUp, Terminal } from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
+import { Calendar, Check, Clock, FileText, GitBranch, RotateCcw, X, ChevronDown, ChevronUp, Terminal, GitCommit } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../../lib/api';
@@ -43,6 +43,50 @@ const OUTPUT_STYLES = {
   complete: 'text-green-400 font-medium',
   error: 'text-red-400',
   info: 'text-gray-400',
+};
+
+// Diff 코드 블록 렌더러 - +/- 라인에 색상 적용
+function DiffCodeBlock({ children, className, ...props }: React.HTMLAttributes<HTMLElement> & { children?: React.ReactNode }) {
+  const isDiff = className?.includes('language-diff');
+  const content = String(children || '');
+
+  if (!isDiff) {
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  }
+
+  // diff 라인별로 색상 적용
+  const lines = content.split('\n');
+  return (
+    <code className={className} {...props}>
+      {lines.map((line, i) => {
+        let lineClass = '';
+        if (line.startsWith('+') && !line.startsWith('+++')) {
+          lineClass = 'diff-line-add';
+        } else if (line.startsWith('-') && !line.startsWith('---')) {
+          lineClass = 'diff-line-remove';
+        } else if (line.startsWith('@@')) {
+          lineClass = 'diff-line-header';
+        } else if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) {
+          lineClass = 'diff-line-file';
+        }
+        return (
+          <span key={i} className={lineClass}>
+            {line}
+            {i < lines.length - 1 ? '\n' : ''}
+          </span>
+        );
+      })}
+    </code>
+  );
+}
+
+// ReactMarkdown 커스텀 컴포넌트
+const markdownComponents = {
+  code: DiffCodeBlock,
 };
 
 // Extract Final Result from pipeline output lines
@@ -90,6 +134,20 @@ function extractFinalResultFromContext(content: string | null): string | null {
   return null;
 }
 
+// Extract Changes section from context file content
+function extractChangesSection(content: string | null): string | null {
+  if (!content) return null;
+
+  // Find the last "## Changes" section
+  const changesMatches = content.match(/## Changes\s*\n([\s\S]*?)(?=\n## |$)/g);
+  if (changesMatches && changesMatches.length > 0) {
+    const lastMatch = changesMatches[changesMatches.length - 1];
+    return lastMatch.replace(/## Changes\s*\n/, '').trim();
+  }
+
+  return null;
+}
+
 export function TaskModal() {
   const taskModalId = useUIStore((s) => s.taskModalId);
   const closeTaskModal = useUIStore((s) => s.closeTaskModal);
@@ -108,6 +166,9 @@ export function TaskModal() {
 
   // Extract Final Result for REVIEW status (try live output first, then context file)
   const finalResult = extractFinalResultFromOutput(liveOutput) || extractFinalResultFromContext(contextContent);
+
+  // Extract Changes section for REVIEW status
+  const changesSection = extractChangesSection(contextContent);
 
   // Auto-scroll live output to bottom
   useEffect(() => {
@@ -294,6 +355,19 @@ export function TaskModal() {
                 AI 작업 결과는 아래 Pipeline Output에서 확인하세요.
               </div>
             )}
+          </div>
+        )}
+
+        {/* Changes (Before → After) - shown in REVIEW status */}
+        {task.status === 'REVIEW' && changesSection && (
+          <div className="border-t dark:border-gray-700 pt-4">
+            <h3 className="flex items-center gap-2 font-medium mb-2 text-blue-600 dark:text-blue-400">
+              <GitCommit className="w-4 h-4" />
+              Changes (Before → After)
+            </h3>
+            <div className="p-4 bg-slate-900 border border-slate-700 rounded-lg overflow-auto max-h-80 prose prose-sm prose-invert prose-headings:text-base prose-headings:font-semibold prose-headings:text-slate-200 prose-p:my-1 prose-p:text-slate-300 prose-ul:my-1 prose-li:my-0 prose-table:text-xs prose-th:text-slate-300 prose-td:text-slate-400 max-w-none diff-content">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{changesSection}</ReactMarkdown>
+            </div>
           </div>
         )}
 

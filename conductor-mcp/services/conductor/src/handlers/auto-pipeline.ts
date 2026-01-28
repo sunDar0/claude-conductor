@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import { Redis } from 'ioredis';
+import simpleGit from 'simple-git';
 import type { Task } from '../types/task.types.js';
 import { readTaskRegistry, writeTaskRegistry, getTaskContextPath } from '../utils/registry.js';
 import { getProjects, getProjectById } from '../utils/project-manager.js';
@@ -7,6 +8,95 @@ import { autoPipelineLogger as log } from '../utils/logger.js';
 import * as fs from 'fs/promises';
 import { nowISO } from '../utils/date.js';
 import { addPipelineAgent, updatePipelineAgent, removePipelineAgent } from '../http-server.js';
+
+// Git 변경사항 수집을 위한 인터페이스
+interface GitChangeInfo {
+  baseCommit: string;
+  files: Array<{
+    path: string;
+    status: string;
+    additions: number;
+    deletions: number;
+  }>;
+  diff: string;
+}
+
+// 작업 전 Git 상태 캡처
+async function captureBaseCommit(workDir: string): Promise<string | null> {
+  try {
+    const git = simpleGit(workDir);
+    const result = await git.revparse(['HEAD']);
+    return result.trim();
+  } catch (error) {
+    log.warn({ workDir, error }, 'Failed to capture base commit');
+    return null;
+  }
+}
+
+// 작업 후 Git 변경사항 수집
+async function collectGitChanges(workDir: string, baseCommit: string): Promise<GitChangeInfo | null> {
+  try {
+    const git = simpleGit(workDir);
+
+    // 변경된 파일 목록 (staged + unstaged)
+    const diffSummary = await git.diffSummary([baseCommit]);
+    const files = diffSummary.files.map(f => {
+      // Binary 파일은 insertions/deletions가 없을 수 있음
+      const additions = 'insertions' in f ? f.insertions : 0;
+      const deletions = 'deletions' in f ? f.deletions : 0;
+      return {
+        path: f.file,
+        status: additions > 0 && deletions === 0 ? '추가됨' :
+                additions === 0 && deletions > 0 ? '삭제됨' : '수정됨',
+        additions,
+        deletions,
+      };
+    });
+
+    // 상세 diff (최대 5000자)
+    let diff = '';
+    if (files.length > 0) {
+      const rawDiff = await git.diff([baseCommit, '--', ...files.slice(0, 5).map(f => f.path)]);
+      diff = rawDiff.slice(0, 5000);
+      if (rawDiff.length > 5000) {
+        diff += '\n... (truncated)';
+      }
+    }
+
+    return { baseCommit, files, diff };
+  } catch (error) {
+    log.warn({ workDir, baseCommit, error }, 'Failed to collect git changes');
+    return null;
+  }
+}
+
+// Git 변경사항을 Markdown으로 포맷팅
+function formatGitChanges(changes: GitChangeInfo): string {
+  if (changes.files.length === 0) {
+    return '';
+  }
+
+  let md = `\n\n## Changes\n\n`;
+  md += `### 변경된 파일 (${changes.files.length}개)\n\n`;
+  md += `| 파일 | 상태 | 변경 |\n`;
+  md += `|------|------|------|\n`;
+
+  for (const file of changes.files) {
+    const change = file.additions > 0 || file.deletions > 0
+      ? `+${file.additions} -${file.deletions}`
+      : '-';
+    md += `| \`${file.path}\` | ${file.status} | ${change} |\n`;
+  }
+
+  if (changes.diff) {
+    md += `\n### 상세 변경 내용\n\n`;
+    md += '```diff\n';
+    md += changes.diff;
+    md += '\n```\n';
+  }
+
+  return md;
+}
 
 // Activity event helper
 function createActivity(type: string, taskId: string, message: string) {
@@ -455,6 +545,10 @@ function extractReadableOutput(rawOutput: string): string {
 }
 
 async function runClaudeCLI(taskId: string, workDir: string, prompt: string, projectId: string): Promise<void> {
+  // 작업 전 Git 상태 캡처
+  const baseCommit = await captureBaseCommit(workDir);
+  log.info({ taskId, workDir, baseCommit }, 'Captured base commit before execution');
+
   return new Promise((resolve, reject) => {
     log.info({ taskId, workDir }, 'Spawning Claude CLI');
     log.debug({ taskId, prompt: prompt.substring(0, 100) + '...' }, 'Prompt preview');
@@ -562,7 +656,18 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
 
         // Extract human-readable content from stream-json output
         const readableOutput = extractReadableOutput(output);
-        const updatedContext = `${existingContext}\n\n## Pipeline Output (${new Date().toISOString()})\n\n${readableOutput || errorOutput || '(no output)'}`;
+
+        // Git 변경사항 수집 (성공 시에만)
+        let changesSection = '';
+        if (code === 0 && baseCommit) {
+          const gitChanges = await collectGitChanges(workDir, baseCommit);
+          if (gitChanges && gitChanges.files.length > 0) {
+            changesSection = formatGitChanges(gitChanges);
+            log.info({ taskId, fileCount: gitChanges.files.length }, 'Git changes collected');
+          }
+        }
+
+        const updatedContext = `${existingContext}\n\n## Pipeline Output (${new Date().toISOString()})\n\n${readableOutput || errorOutput || '(no output)'}${changesSection}`;
         await fs.writeFile(contextPath, updatedContext, 'utf-8');
 
         // Transition to REVIEW on success
