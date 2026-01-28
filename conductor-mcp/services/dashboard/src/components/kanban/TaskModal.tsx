@@ -45,6 +45,24 @@ const OUTPUT_STYLES = {
   info: 'text-gray-400',
 };
 
+// Extract Final Result from pipeline output lines
+function extractFinalResult(lines: string[] | undefined): string | null {
+  if (!lines) return null;
+
+  for (const line of lines) {
+    const { type, content } = parseOutputLine(line);
+    if (type === 'complete' && content) {
+      // Remove the completion prefix emoji and extract result
+      const resultMatch = content.match(/✅[^]*?\n\n([\s\S]*)/);
+      if (resultMatch) {
+        return resultMatch[1].trim();
+      }
+      return content.replace(/^✅\s*작업 완료[^]*?\)\s*/, '').trim();
+    }
+  }
+  return null;
+}
+
 export function TaskModal() {
   const taskModalId = useUIStore((s) => s.taskModalId);
   const closeTaskModal = useUIStore((s) => s.closeTaskModal);
@@ -60,6 +78,9 @@ export function TaskModal() {
   const task = taskModalId ? tasks[taskModalId] : null;
   const liveOutput = taskModalId ? pipelineOutput[taskModalId] : undefined;
 
+  // Extract Final Result for REVIEW status
+  const finalResult = extractFinalResult(liveOutput);
+
   // Auto-scroll live output to bottom
   useEffect(() => {
     if (liveLogRef.current && liveOutput?.length) {
@@ -67,7 +88,7 @@ export function TaskModal() {
     }
   }, [liveOutput]);
 
-  // Fetch context when modal opens
+  // Fetch context when modal opens or status changes
   useEffect(() => {
     if (taskModalId) {
       api.get<{ content: string }>(`/tasks/${taskModalId}/context`)
@@ -78,7 +99,7 @@ export function TaskModal() {
       setContextContent(null);
       setShowContext(false);
     };
-  }, [taskModalId]);
+  }, [taskModalId, task?.status]);
 
   const handleApprove = async () => {
     if (!task) return;
@@ -121,10 +142,18 @@ export function TaskModal() {
     if (!task) return;
     setLoading(true);
     try {
-      // Trigger pipeline - will transition to IN_PROGRESS
-      await api.post(`/tasks/${task.id}/transition`, { target_state: 'READY' });
+      // Include feedback if provided
+      if (feedback.trim()) {
+        await api.post(`/tasks/${task.id}/transition`, {
+          target_state: 'READY',
+          feedback: feedback.trim()
+        });
+      } else {
+        await api.post(`/tasks/${task.id}/transition`, { target_state: 'READY' });
+      }
       await api.post(`/tasks/${task.id}/run`);
       toast.success('AI가 작업을 다시 시작합니다');
+      setFeedback('');
       await fetchTasks();
       closeTaskModal();
     } catch (err) {
@@ -221,6 +250,19 @@ export function TaskModal() {
           </div>
         )}
 
+        {/* Final Result - shown in REVIEW status */}
+        {task.status === 'REVIEW' && finalResult && (
+          <div className="border-t dark:border-gray-700 pt-4">
+            <h3 className="flex items-center gap-2 font-medium mb-2 text-green-600 dark:text-green-400">
+              <Check className="w-4 h-4" />
+              Final Result
+            </h3>
+            <div className="p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg overflow-auto max-h-64 prose prose-sm dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-table:text-xs max-w-none">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalResult}</ReactMarkdown>
+            </div>
+          </div>
+        )}
+
         {/* Pipeline Output / Context */}
         {contextContent && (
           <div className="border-t dark:border-gray-700 pt-4">
@@ -264,10 +306,10 @@ export function TaskModal() {
           <div className="border-t dark:border-gray-700 pt-4 space-y-3">
             <h3 className="font-medium">Review Actions</h3>
 
-            {/* Feedback Input - Always visible */}
+            {/* Feedback Input - always visible, used for reject/rerun */}
             <div>
               <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">
-                피드백 (반려 시 필수)
+                피드백 (반려/재실행 시 사용)
               </label>
               <textarea
                 value={feedback}
