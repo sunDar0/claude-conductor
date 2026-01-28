@@ -47,3 +47,31 @@ coverage/
 
 # TypeScript cache
 *.tsbuildinfo
+.tsc-cache/
+
+# Build output variants
+out/
+.next/
+
+# IDE workspace files
+*.code-workspace
+
+# Package manager lock files (optional - uncomment if not sharing)
+# pnpm-lock.yaml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Secrets and credentials (additional patterns)
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.json
+credentials.json
+*-credentials.json
+service-account*.json
