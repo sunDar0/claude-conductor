@@ -1,0 +1,10 @@
+FROM node:22-alpine
+RUN corepack enable && corepack prepare pnpm@latest --activate
+WORKDIR /app
+COPY package.json pnpm-lock.yaml* ./
+RUN pnpm install
+COPY tsconfig.json tsup.config.ts ./
+RUN mkdir -p /data/conductor
+ENV NODE_ENV=development
+EXPOSE 3100 3101
+CMD ["pnpm", "dev"]
