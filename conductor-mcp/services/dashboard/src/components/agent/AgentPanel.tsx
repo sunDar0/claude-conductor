@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Bot, RefreshCw, CheckCircle, XCircle, Clock, Play, Square, Code, TestTube, Eye, FileText, Shield } from 'lucide-react';
+import { Cpu, RefreshCw, CheckCircle, XCircle, Clock, Play, Square, Code, TestTube, Eye, FileText, Shield, Terminal } from 'lucide-react';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
 import { useAgentStore, AgentStatus } from '../../store/agentStore';
@@ -61,8 +61,8 @@ export function AgentPanel() {
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-4 py-3 border-b dark:border-gray-700">
         <div className="flex items-center gap-2">
-          <Bot className="w-5 h-5 text-purple-500" />
-          <h2 className="font-semibold">Sub Agents</h2>
+          <Cpu className="w-5 h-5 text-purple-500" />
+          <h2 className="font-semibold">Workers</h2>
           {running > 0 && (
             <Badge className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
               {running} running
@@ -81,7 +81,7 @@ export function AgentPanel() {
             <h3 className="text-sm font-medium text-gray-500 mb-2">Available Agent Roles</h3>
             <div className="grid grid-cols-1 gap-2">
               {roles.map((role) => {
-                const RoleIcon = ROLE_ICONS[role.role] || Bot;
+                const RoleIcon = ROLE_ICONS[role.role] || Cpu;
                 return (
                   <div
                     key={role.role}
@@ -111,14 +111,14 @@ export function AgentPanel() {
           </div>
         )}
 
-        {/* Active Agents Section */}
+        {/* Active Workers Section */}
         <div>
-          <h3 className="text-sm font-medium text-gray-500 mb-2">Active Agents</h3>
+          <h3 className="text-sm font-medium text-gray-500 mb-2">Active Workers</h3>
           {agentList.length === 0 ? (
             <div className="text-center text-gray-400 py-8 bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700">
-              <Bot className="w-12 h-12 mx-auto mb-2 opacity-50" />
-              <p>No active agents</p>
-              <p className="text-sm mt-1">Use MCP tools to spawn agents</p>
+              <Terminal className="w-12 h-12 mx-auto mb-2 opacity-50" />
+              <p>No active workers</p>
+              <p className="text-sm mt-1">Start a task to spawn workers</p>
             </div>
           ) : (
           agentList.map((agent) => {
@@ -145,7 +145,10 @@ export function AgentPanel() {
                     <Play className="w-3 h-3" />
                     <span>Task: {agent.task_id || 'N/A'}</span>
                   </div>
-                  <div>Skills: {agent.skills_loaded.join(', ') || 'none'}</div>
+                  <div className="flex items-center gap-1">
+                    <Terminal className="w-3 h-3" />
+                    <span>{agent.skills_loaded.join(', ') || 'CLI'}</span>
+                  </div>
                   <div className="font-mono text-[10px] text-gray-400">
                     ID: {agent.id.slice(-16)}
                   </div>

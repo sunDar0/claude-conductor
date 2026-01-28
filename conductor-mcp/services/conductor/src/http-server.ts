@@ -289,11 +289,11 @@ app.post('/api/servers/:taskId/stop', async (req: Request, res: Response) => {
   }
 });
 
-// REST API for Agents (Phase 5)
+// REST API for Workers (Phase 5)
 // Agent state is managed by the MCP server, so these endpoints return cached data
 let agentCache: unknown[] = [];
 let agentRolesCache: unknown[] = [];
-// Pipeline agents (virtual agents for auto-pipeline tasks)
+// Workers (CLI processes executing tasks)
 const pipelineAgents: Map<string, unknown> = new Map();
 
 export function updateAgentCache(agents: unknown[]): void {
@@ -304,44 +304,44 @@ export function updateAgentRolesCache(roles: unknown[]): void {
   agentRolesCache = roles;
 }
 
-// Add pipeline agent when auto-pipeline starts
+// Add worker when auto-pipeline starts
 export function addPipelineAgent(taskId: string, taskTitle: string): void {
-  const agent = {
-    id: `pipeline-${taskId}`,
+  const worker = {
+    id: `worker-${taskId}`,
     role: 'code',
     status: 'running',
     task_id: taskId,
-    skills_loaded: ['auto-pipeline'],
+    skills_loaded: ['Claude CLI'],
     created_at: new Date().toISOString(),
     started_at: new Date().toISOString(),
     completed_at: null,
     error: null,
-    _isPipeline: true,
+    _isWorker: true,
     _taskTitle: taskTitle,
   };
-  pipelineAgents.set(taskId, agent);
-  log.info({ taskId }, 'Pipeline agent added');
+  pipelineAgents.set(taskId, worker);
+  log.info({ taskId }, 'Worker added');
 }
 
-// Update pipeline agent status
+// Update worker status
 export function updatePipelineAgent(taskId: string, status: string, error?: string): void {
-  const agent = pipelineAgents.get(taskId) as Record<string, unknown> | undefined;
-  if (agent) {
-    agent.status = status;
+  const worker = pipelineAgents.get(taskId) as Record<string, unknown> | undefined;
+  if (worker) {
+    worker.status = status;
     if (status === 'completed' || status === 'error') {
-      agent.completed_at = new Date().toISOString();
+      worker.completed_at = new Date().toISOString();
     }
     if (error) {
-      agent.error = error;
+      worker.error = error;
     }
-    log.info({ taskId, status }, 'Pipeline agent updated');
+    log.info({ taskId, status }, 'Worker updated');
   }
 }
 
-// Remove pipeline agent
+// Remove worker
 export function removePipelineAgent(taskId: string): void {
   pipelineAgents.delete(taskId);
-  log.info({ taskId }, 'Pipeline agent removed');
+  log.info({ taskId }, 'Worker removed');
 }
 
 app.get('/api/agents', (_req: Request, res: Response) => {
