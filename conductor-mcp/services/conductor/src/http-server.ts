@@ -1,6 +1,6 @@
 import express, { Application, Request, Response, NextFunction } from 'express';
 import { httpLogger as log } from './utils/logger.js';
-import { readTaskRegistry, readServerRegistry, getTaskContextPath } from './utils/registry.js';
+import { readTaskRegistry, readServerRegistry, getTaskContextPath, getTaskPromptPath } from './utils/registry.js';
 import {
   getProjects,
   addProject,
@@ -247,6 +247,17 @@ app.get('/api/tasks/:taskId/context', async (req: Request, res: Response) => {
     res.json({ success: true, content });
   } catch {
     res.json({ success: true, content: '(No context file found)' });
+  }
+});
+
+// Get task prompt history
+app.get('/api/tasks/:taskId/prompt', async (req: Request, res: Response) => {
+  try {
+    const promptPath = getTaskPromptPath(req.params.taskId);
+    const content = await fs.readFile(promptPath, 'utf-8');
+    res.json({ success: true, content });
+  } catch {
+    res.json({ success: true, content: null });
   }
 });
 

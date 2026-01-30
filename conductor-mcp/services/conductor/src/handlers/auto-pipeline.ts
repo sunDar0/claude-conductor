@@ -1,13 +1,15 @@
 import { spawn, ChildProcess } from 'child_process';
+import { randomUUID } from 'crypto';
 import { Redis } from 'ioredis';
 import simpleGit from 'simple-git';
 import type { Task } from '../types/task.types.js';
-import { readTaskRegistry, writeTaskRegistry, getTaskContextPath } from '../utils/registry.js';
+import { readTaskRegistry, writeTaskRegistry, getTaskContextPath, getTaskPromptPath } from '../utils/registry.js';
 import { getProjects, getProjectById } from '../utils/project-manager.js';
 import { autoPipelineLogger as log } from '../utils/logger.js';
 import * as fs from 'fs/promises';
 import { nowISO } from '../utils/date.js';
 import { addPipelineAgent, updatePipelineAgent, removePipelineAgent } from '../http-server.js';
+import { runCodeReview, runSecurityReview } from './review.handler.js';
 
 // Git 변경사항 수집을 위한 인터페이스
 interface GitChangeInfo {
@@ -112,6 +114,7 @@ function createActivity(type: string, taskId: string, message: string) {
 let redis: Redis | null = null;
 let publishEventFn: ((event: string, data: unknown) => Promise<void>) | null = null;
 const activePipelines: Map<string, ChildProcess> = new Map();
+const cancelledPipelines: Set<string> = new Set();
 
 // Project-based queue: one task at a time per project
 const projectQueues: Map<string, string[]> = new Map(); // projectId -> taskId[]
@@ -182,6 +185,18 @@ export async function runAutoPipeline(taskId: string): Promise<void> {
       if (project) {
         workDir = project.path;
         projectId = project.id;
+      } else if (task.project_path) {
+        // Project ID not found but task has stored path - use it directly
+        log.warn({ taskId, staleProjectId: task.project_id, projectPath: task.project_path }, 'Task references non-existent project, using stored project_path');
+        workDir = task.project_path;
+      } else {
+        // No path stored either - try first project as last resort
+        const projects = await getProjects();
+        if (projects.length > 0) {
+          log.warn({ taskId, staleProjectId: task.project_id }, 'Task references non-existent project and has no stored path, falling back to first project');
+          workDir = projects[0].path;
+          projectId = projects[0].id;
+        }
       }
     } else {
       // Use first project if no project_id specified
@@ -191,6 +206,8 @@ export async function runAutoPipeline(taskId: string): Promise<void> {
         projectId = projects[0].id;
       }
     }
+
+    log.info({ taskId, projectId, workDir }, 'Resolved working directory for task');
 
     // 3. Check if project is already running a task
     if (runningProjects.has(projectId)) {
@@ -209,10 +226,14 @@ export async function runAutoPipeline(taskId: string): Promise<void> {
     runningProjects.add(projectId);
     log.info({ taskId, workDir }, 'Invoking Claude CLI');
 
-    // Read previous output if this is a rerun with feedback
+    // Check for session resume capability
+    const existingSessionId = task.session_id;
+    const isResume = !!existingSessionId;
+
+    // Read previous output only if no session_id (legacy fallback)
     let previousOutput: string | undefined;
     const unresolvedFeedback = task.feedback_history.filter(fb => !fb.resolved);
-    if (unresolvedFeedback.length > 0) {
+    if (unresolvedFeedback.length > 0 && !isResume) {
       try {
         const contextPath = getTaskContextPath(taskId);
         const contextContent = await fs.readFile(contextPath, 'utf-8');
@@ -229,17 +250,31 @@ export async function runAutoPipeline(taskId: string): Promise<void> {
             previousOutput = lastMatch.replace(/## Pipeline Output[^\n]*\n\n/, '').trim();
           }
         }
-        log.info({ taskId, hasPreviousOutput: !!previousOutput, outputLength: previousOutput?.length }, 'Read previous output for feedback');
+        log.info({ taskId, hasPreviousOutput: !!previousOutput, outputLength: previousOutput?.length }, 'Read previous output for feedback (legacy mode)');
       } catch (err) {
         log.warn({ taskId, error: err }, 'Could not read previous output');
       }
     }
 
     // Build prompt for Claude CLI
-    const prompt = await buildPrompt(task, previousOutput);
+    const prompt = await buildPrompt(task, isResume, previousOutput);
+
+    // Save prompt to prompt.md for debugging/visibility
+    try {
+      const promptPath = getTaskPromptPath(taskId);
+      const runType = isResume ? '재실행 (Resume)' : (unresolvedFeedback.length > 0 ? '재실행 (Legacy)' : '초기 실행');
+      const promptEntry = `\n\n---\n## ${runType} — ${new Date().toISOString()}\n\n### 사용자 요청\n- **제목**: ${task.title}\n- **설명**: ${task.description || '없음'}\n${unresolvedFeedback.length > 0 ? `\n### 피드백\n${unresolvedFeedback.map(fb => `- ${fb.content}`).join('\n')}\n` : ''}\n### 최종 프롬프트\n\`\`\`\n${prompt}\n\`\`\`\n`;
+      let existing = '';
+      try { existing = await fs.readFile(promptPath, 'utf-8'); } catch { /* first run */ }
+      await fs.writeFile(promptPath, existing ? existing + promptEntry : `# Prompt History — ${taskId}\n${promptEntry}`, 'utf-8');
+      log.info({ taskId }, 'Prompt saved to prompt.md');
+    } catch (err) {
+      log.warn({ taskId, error: err }, 'Failed to save prompt.md');
+    }
 
     // Run Claude CLI - will transition to IN_PROGRESS when first output received
-    await runClaudeCLI(taskId, workDir, prompt, projectId);
+    const feedbackInfo = unresolvedFeedback.map(fb => fb.content);
+    await runClaudeCLI(taskId, workDir, prompt, projectId, existingSessionId, feedbackInfo.length > 0 ? feedbackInfo : undefined);
 
   } catch (error) {
     log.error({ taskId, error }, 'Error processing task');
@@ -263,7 +298,7 @@ async function processNextInQueue(projectId: string): Promise<void> {
   }
 }
 
-async function buildPrompt(task: Task, previousOutput?: string): Promise<string> {
+async function buildPrompt(task: Task, isResume: boolean, previousOutput?: string): Promise<string> {
   const description = task.description || 'No description provided';
   const taskType = detectTaskType(task);
 
@@ -277,8 +312,29 @@ async function buildPrompt(task: Task, previousOutput?: string): Promise<string>
     totalFeedback: task.feedback_history.length,
     unresolvedCount: unresolvedFeedback.length,
     feedbackContents: unresolvedFeedback.map(fb => fb.content),
-    hasPreviousOutput: !!previousOutput
+    hasPreviousOutput: !!previousOutput,
+    isResume
   }, 'Building prompt with feedback');
+
+  // Resume mode: CLI has full context, only send feedback
+  if (isResume && unresolvedFeedback.length > 0) {
+    return `# 피드백 반영 요청
+
+## 태스크 정보
+- **ID**: ${task.id}
+- **제목**: ${task.title}
+
+## 피드백 (반드시 반영해야 함)
+${unresolvedFeedback.map(fb => `- ${fb.content}`).join('\n')}
+
+## 지침
+이전 대화 컨텍스트가 자동으로 유지됩니다.
+피드백에서 요청한 사항만 수정하세요.
+불필요한 변경 최소화.
+**모든 출력과 문서는 한글로 작성**
+
+지금 수정을 시작하세요.`;
+  }
 
   // If there's feedback AND previous output, this is a revision request
   if (unresolvedFeedback.length > 0 && previousOutput) {
@@ -544,7 +600,60 @@ function extractReadableOutput(rawOutput: string): string {
   return parts.join('\n\n') || '(no output)';
 }
 
-async function runClaudeCLI(taskId: string, workDir: string, prompt: string, projectId: string): Promise<void> {
+// 리뷰 이슈 자동 수정을 위한 Claude CLI 실행
+async function runFixCLI(taskId: string, workDir: string, reviewMarkdown: string): Promise<{ success: boolean; output: string }> {
+  return new Promise((resolve) => {
+    const prompt = `# 코드 리뷰 이슈 수정 요청
+
+다음 코드 리뷰에서 발견된 Critical/Security 이슈를 수정하세요.
+
+${reviewMarkdown}
+
+## 지침
+- Critical 및 Security 카테고리 이슈만 수정하세요
+- 최소한의 변경으로 이슈를 해결하세요
+- 수정한 내용을 간단히 요약하세요
+- **한글로 작성**`;
+
+    const claude = spawn('claude', ['-p', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'], {
+      cwd: workDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        FORCE_COLOR: '0',
+        NO_COLOR: '1',
+        HOME: process.env.HOME,
+        CLAUDE_CODE_ENTRYPOINT: 'cli',
+      },
+    });
+
+    claude.stdin?.write(prompt);
+    claude.stdin?.end();
+
+    let output = '';
+    claude.stdout?.on('data', (data) => { output += data.toString(); });
+    claude.stderr?.on('data', () => {}); // ignore stderr
+
+    // 10분 타임아웃
+    const timeout = setTimeout(() => {
+      claude.kill('SIGTERM');
+      resolve({ success: false, output: 'Fix timeout' });
+    }, 10 * 60 * 1000);
+
+    claude.on('close', (code) => {
+      clearTimeout(timeout);
+      const readable = extractReadableOutput(output);
+      resolve({ success: code === 0, output: readable });
+    });
+
+    claude.on('error', (err) => {
+      clearTimeout(timeout);
+      resolve({ success: false, output: err.message });
+    });
+  });
+}
+
+async function runClaudeCLI(taskId: string, workDir: string, prompt: string, projectId: string, sessionId: string | null, feedbackInfo?: string[]): Promise<void> {
   // 작업 전 Git 상태 캡처
   const baseCommit = await captureBaseCommit(workDir);
   log.info({ taskId, workDir, baseCommit }, 'Captured base commit before execution');
@@ -553,9 +662,21 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
     log.info({ taskId, workDir }, 'Spawning Claude CLI');
     log.debug({ taskId, prompt: prompt.substring(0, 100) + '...' }, 'Prompt preview');
 
+    // Build CLI args with session support
+    const cliArgs = ['-p', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'];
+    let newSessionId: string | null = null;
+    if (sessionId) {
+      cliArgs.push('--resume', sessionId);
+      log.info({ taskId, sessionId }, 'Resuming previous CLI session');
+    } else {
+      newSessionId = randomUUID();
+      cliArgs.push('--session-id', newSessionId);
+      log.info({ taskId, newSessionId }, 'Starting new CLI session');
+    }
+
     // Pass prompt via stdin to avoid shell escaping issues
     // Use stream-json format for structured progress tracking
-    const claude = spawn('claude', ['-p', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'], {
+    const claude = spawn('claude', cliArgs, {
       cwd: workDir,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
@@ -667,7 +788,57 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
           }
         }
 
-        const updatedContext = `${existingContext}\n\n## Pipeline Output (${new Date().toISOString()})\n\n${readableOutput || errorOutput || '(no output)'}${changesSection}`;
+        // AI 코드 리뷰 & 보안 점검 (병렬 실행, 성공 시에만)
+        let reviewSection = '';
+
+        if (code === 0) {
+          try {
+            await publishEventFn?.('pipeline:output', {
+              task_id: taskId,
+              event_type: 'info',
+              output: `🔍 AI 코드 리뷰 & 보안 점검 실행 중...`,
+              timestamp: new Date().toISOString(),
+            });
+
+            // 코드 리뷰와 보안 점검을 병렬 실행
+            const [reviewResult, securityResult] = await Promise.all([
+              runCodeReview(taskId, workDir, baseCommit || undefined),
+              runSecurityReview(taskId, workDir, baseCommit || undefined),
+            ]);
+
+            log.info({ taskId, reviewHasCritical: reviewResult.hasCritical, securityHasCritical: securityResult.hasCritical }, 'AI review & security check completed');
+
+            const hasCritical = reviewResult.hasCritical || securityResult.hasCritical;
+
+            // 코드 리뷰 결과
+            if (reviewResult.reviewMarkdown) {
+              reviewSection += `\n\n${reviewResult.reviewMarkdown}`;
+            } else {
+              reviewSection += `\n\n## 코드 리뷰: ${taskId}\n\n코드 리뷰 없음 — 변경된 파일이 없습니다.`;
+            }
+
+            // 보안 점검 결과
+            if (securityResult.securityMarkdown) {
+              reviewSection += `\n\n${securityResult.securityMarkdown}`;
+            }
+
+            await publishEventFn?.('pipeline:output', {
+              task_id: taskId,
+              event_type: hasCritical ? 'error' : 'complete',
+              output: hasCritical
+                ? `⚠️ AI 리뷰 완료 - 치명적 이슈 발견`
+                : `✅ AI 코드 리뷰 & 보안 점검 완료`,
+              timestamp: new Date().toISOString(),
+            });
+          } catch (reviewError) {
+            log.warn({ taskId, error: reviewError }, 'AI review failed (non-blocking)');
+          }
+        }
+
+        const runLabel = feedbackInfo && feedbackInfo.length > 0
+          ? `## Pipeline Output — 재실행 (${new Date().toISOString()})\n\n> **피드백**: ${feedbackInfo.join(' / ')}\n`
+          : `## Pipeline Output — 초기 실행 (${new Date().toISOString()})`;
+        const updatedContext = `${existingContext}\n\n${runLabel}\n\n${readableOutput || errorOutput || '(no output)'}${changesSection}${reviewSection}`;
         await fs.writeFile(contextPath, updatedContext, 'utf-8');
 
         // Transition to REVIEW on success
@@ -676,6 +847,11 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
           const task = registry.tasks[taskId];
           if (task) {
             task.status = 'REVIEW';
+            // Save session_id for future resume
+            if (newSessionId) {
+              task.session_id = newSessionId;
+              log.info({ taskId, sessionId: newSessionId }, 'Session ID saved to task');
+            }
             task.updated_at = new Date().toISOString();
             await writeTaskRegistry(registry);
             await publishEventFn?.('task:review', { id: taskId, status: 'REVIEW' });
@@ -689,7 +865,24 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
             log.info({ taskId }, 'Task completed, moved to REVIEW');
           }
         } else {
-          await updateTaskError(taskId, new Error(`Claude CLI exited with code ${code}\n${errorOutput}`));
+          // Skip error handling if pipeline was cancelled (user-initiated)
+          if (!cancelledPipelines.has(taskId)) {
+            await updateTaskError(taskId, new Error(`Claude CLI exited with code ${code}\n${errorOutput}`));
+            // Transition task back to READY so user can retry
+            try {
+              const errRegistry = await readTaskRegistry();
+              const errTask = errRegistry.tasks[taskId];
+              if (errTask && errTask.status === 'IN_PROGRESS') {
+                errTask.status = 'READY';
+                errTask.updated_at = new Date().toISOString();
+                await writeTaskRegistry(errRegistry);
+                await publishEventFn?.('task:review', { id: taskId, status: 'READY' });
+              }
+            } catch (e) {
+              log.error({ taskId, error: e }, 'Failed to transition task back to READY after error');
+            }
+          }
+          cancelledPipelines.delete(taskId);
           // Update pipeline agent status on error
           updatePipelineAgent(taskId, 'error', `Exit code: ${code}`);
           await publishEventFn?.('agent.error', { agentId: `pipeline-${taskId}`, error: `Exit code: ${code}` });
@@ -797,8 +990,22 @@ export async function cancelPipeline(taskId: string): Promise<{ success: boolean
     return { success: false, message: `No running pipeline for ${taskId}` };
   }
 
+  // Mark as cancelled so cleanup skips false error
+  cancelledPipelines.add(taskId);
   process.kill('SIGTERM');
   activePipelines.delete(taskId);
+  // Clear session_id so restart runs fresh (not resume)
+  try {
+    const registry = await readTaskRegistry();
+    const task = registry.tasks[taskId];
+    if (task) {
+      task.session_id = null;
+      task.updated_at = new Date().toISOString();
+      await writeTaskRegistry(registry);
+    }
+  } catch (e) {
+    log.error({ taskId, error: e }, 'Failed to clear session_id on cancel');
+  }
   // Update and remove pipeline agent
   updatePipelineAgent(taskId, 'terminated');
   await publishEventFn?.('agent.terminated', { agentId: `pipeline-${taskId}` });
