@@ -57,17 +57,27 @@ echo ""
 echo "종료하려면 Ctrl+C"
 echo ""
 
+# 자식 프로세스 트리 종료 함수
+kill_tree() {
+  local pid=$1
+  # 자식 프로세스들 먼저 종료
+  pkill -TERM -P "$pid" 2>/dev/null || true
+  kill "$pid" 2>/dev/null || true
+}
+
 # 종료 핸들러
 cleanup() {
   echo ""
   echo "=== 종료 중 ==="
-  kill $CONDUCTOR_PID 2>/dev/null
-  kill $DASHBOARD_PID 2>/dev/null
+  kill_tree $CONDUCTOR_PID
+  kill_tree $DASHBOARD_PID
+  wait $CONDUCTOR_PID 2>/dev/null || true
+  wait $DASHBOARD_PID 2>/dev/null || true
   echo "완료"
   exit 0
 }
 
 trap cleanup SIGINT SIGTERM
 
-# 대기
-wait
+# 대기 (시그널로 종료 시 wait의 non-zero 리턴 무시)
+wait || true

@@ -337,7 +337,8 @@ claude-conductor/
 │   │   └── dashboard/             # React 대시보드
 │   │       ├── src/
 │   │       │   ├── components/    # React 컴포넌트
-│   │       │   ├── stores/        # Zustand 상태
+│   │       │   ├── store/         # Zustand 상태 저장소
+│   │       │   ├── hooks/         # 커스텀 훅 (WebSocket 등)
 │   │       │   ├── types/         # TypeScript 타입
 │   │       │   └── App.tsx        # 메인 앱 컴포넌트
 │   │       └── package.json
@@ -351,7 +352,7 @@ claude-conductor/
 │   └── tasks/                     # 작업 데이터 (gitignored)
 ├── start.sh                       # 빠른 시작 스크립트
 ├── README.md                      # 이 파일
-└── CHANGELOG.md                   # 버전 이력
+└── spec/                          # 설계 사양 문서
 ```
 
 ### 개발 스크립트
@@ -531,7 +532,7 @@ node --version  # 24.0.0 이상이어야 함
 
 ## 라이선스
 
-이 프로젝트는 MIT 라이선스에 따라 라이센스됩니다. 자세한 내용은 [LICENSE](LICENSE) 파일을 참고하세요.
+이 프로젝트는 MIT 라이선스에 따라 라이센스됩니다.
 
 ## 지원
 
