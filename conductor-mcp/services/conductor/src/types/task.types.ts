@@ -13,6 +13,7 @@ export interface Feedback {
 export interface Task {
   id: string;
   project_id: string;              // 프로젝트 ID (멀티 프로젝트 지원)
+  project_path?: string;           // 프로젝트 경로 (project_id 조회 실패 시 fallback)
   title: string;
   description: string;
   status: TaskStatus;
@@ -25,6 +26,7 @@ export interface Task {
   context_file: string;
   changelog_versions: number[];
   feedback_history: Feedback[];
+  session_id: string | null;
 }
 
 // 프로젝트 관련 타입
@@ -54,7 +56,7 @@ export interface TaskRegistry {
 export const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   BACKLOG: ['READY', 'CLOSED'],
   READY: ['IN_PROGRESS', 'BACKLOG', 'CLOSED'],
-  IN_PROGRESS: ['REVIEW', 'CLOSED'],
+  IN_PROGRESS: ['REVIEW', 'READY', 'CLOSED'],
   REVIEW: ['DONE', 'IN_PROGRESS', 'READY', 'BACKLOG'],
   DONE: ['CLOSED'],
   CLOSED: [],

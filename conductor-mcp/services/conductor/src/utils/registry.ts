@@ -16,6 +16,10 @@ export function getTaskContextPath(taskId: string): string {
   return path.join(WORKSPACE_DIR, '.claude', 'tasks', taskId, 'context.md');
 }
 
+export function getTaskPromptPath(taskId: string): string {
+  return path.join(WORKSPACE_DIR, '.claude', 'tasks', taskId, 'prompt.md');
+}
+
 export function getTaskDirPath(taskId: string): string {
   return path.join(WORKSPACE_DIR, '.claude', 'tasks', taskId);
 }
