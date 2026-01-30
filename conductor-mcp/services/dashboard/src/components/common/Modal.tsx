@@ -7,7 +7,7 @@ interface ModalProps {
   onClose: () => void;
   title?: string;
   children: React.ReactNode;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'full';
 }
 
 export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalProps) {
@@ -37,7 +37,8 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalPr
           'relative bg-white dark:bg-gray-800 rounded-xl shadow-xl transform transition-all',
           size === 'sm' && 'max-w-sm w-full',
           size === 'md' && 'max-w-md w-full',
-          size === 'lg' && 'max-w-2xl w-full'
+          size === 'lg' && 'max-w-2xl w-full',
+          size === 'full' && 'max-w-[calc(100vw-2rem)] w-full max-h-[calc(100vh-2rem)] flex flex-col'
         )}>
           {title && (
             <div className="flex items-center justify-between px-6 py-4 border-b dark:border-gray-700">
@@ -50,7 +51,7 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalPr
               </button>
             </div>
           )}
-          <div className="p-6">{children}</div>
+          <div className={cn('p-6', size === 'full' && 'overflow-y-auto flex-1')}>{children}</div>
         </div>
       </div>
     </div>

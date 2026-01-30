@@ -1,11 +1,11 @@
-import { Calendar, Check, Clock, FileText, GitBranch, RotateCcw, X, ChevronDown, ChevronUp, Terminal, GitCommit } from 'lucide-react';
+import { AlertCircle, Calendar, Check, Clock, FileText, GitBranch, Play, RotateCcw, X, ChevronDown, ChevronUp, Terminal, GitCommit, StopCircle, Maximize2, Minimize2 } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../../lib/api';
 import { cn, formatRelativeTime } from '../../lib/utils';
 import { useTaskStore } from '../../store/taskStore';
-import { toast } from '../../store/toastStore';
+import { toast, useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
 import { Badge } from '../common/Badge';
 import { Button } from '../common/Button';
@@ -110,22 +110,28 @@ function extractFinalResultFromOutput(lines: string[] | undefined): string | nul
   return null;
 }
 
-// Extract Final Result from context file content
+// Extract Final Result from context file content (가장 최근 Pipeline Output의 Final Result)
 function extractFinalResultFromContext(content: string | null): string | null {
   if (!content) return null;
 
-  // Try multiple patterns to find final result
-  // Pattern 1: "### Final Result" section
-  const finalResultMatch = content.match(/### Final Result\s*\n([\s\S]*?)(?=\n##|$)/);
-  if (finalResultMatch) {
-    return finalResultMatch[1].trim();
+  // 마지막 "### Final Result" 위치를 찾아서 끝까지 캡처
+  // (본문 안에 --- 수평선이 있을 수 있으므로 \n--- 로 자르면 안됨)
+  const lastIdx = content.lastIndexOf('### Final Result');
+  if (lastIdx !== -1) {
+    const afterHeader = content.substring(lastIdx);
+    // 다음 ## 섹션 시작 전까지 (## Pipeline Output, ## Changes, ## Code Review 등)
+    const nextSectionMatch = afterHeader.match(/\n## [A-Z]/);
+    const result = nextSectionMatch
+      ? afterHeader.substring(0, nextSectionMatch.index)
+      : afterHeader;
+    return result.replace(/### Final Result\s*\n/, '').trim();
   }
 
-  // Pattern 2: Last "## Pipeline Output" section content
-  const pipelineMatch = content.match(/## Pipeline Output[^\n]*\n\n([\s\S]*?)(?=\n## |$)/);
-  if (pipelineMatch) {
-    const pipelineContent = pipelineMatch[1].trim();
-    // If it's not just "(no output)", return it
+  // Fallback: 마지막 Pipeline Output 섹션
+  const pipelineMatches = content.match(/## Pipeline Output[^\n]*\n\n([\s\S]*?)(?=\n## Pipeline Output|$)/g);
+  if (pipelineMatches && pipelineMatches.length > 0) {
+    const lastMatch = pipelineMatches[pipelineMatches.length - 1];
+    const pipelineContent = lastMatch.replace(/## Pipeline Output[^\n]*\n\n/, '').trim();
     if (pipelineContent && pipelineContent !== '(no output)') {
       return pipelineContent;
     }
@@ -148,6 +154,61 @@ function extractChangesSection(content: string | null): string | null {
   return null;
 }
 
+// Extract Code Review section from context file content
+function extractReviewSection(content: string | null): { markdown: string | null; hasCritical: boolean; historyMarkdown: string | null; iterations: number } {
+  if (!content) return { markdown: null, hasCritical: false, historyMarkdown: null, iterations: 0 };
+
+  // Find the last "## Code Review:" or "## 코드 리뷰:" section
+  const reviewMatches = content.match(/## (?:Code Review|코드 리뷰)[:\s][^\n]*\n([\s\S]*?)(?=\n## (?!#)|$)/g);
+  if (reviewMatches && reviewMatches.length > 0) {
+    const lastMatch = reviewMatches[reviewMatches.length - 1];
+    const hasCritical = /(?:Critical|치명적|critical)/i.test(lastMatch);
+    return { markdown: lastMatch.trim(), hasCritical, historyMarkdown: null, iterations: 0 };
+  }
+
+  return { markdown: null, hasCritical: false, historyMarkdown: null, iterations: 0 };
+}
+
+// Extract Security Review section from context file content
+function extractSecuritySection(content: string | null): { markdown: string | null; hasCritical: boolean } {
+  if (!content) return { markdown: null, hasCritical: false };
+
+  const secMatches = content.match(/## (?:Security Review|보안 점검)[:\s][^\n]*\n([\s\S]*?)(?=\n## (?!#)|$)/g);
+  if (secMatches && secMatches.length > 0) {
+    const lastMatch = secMatches[secMatches.length - 1];
+    const hasCritical = /(?:Critical|치명적|critical)/i.test(lastMatch);
+    return { markdown: lastMatch.trim(), hasCritical };
+  }
+
+  return { markdown: null, hasCritical: false };
+}
+
+// Extract run history info from context
+function extractRunHistory(content: string | null): { totalRuns: number; lastRunType: 'initial' | 'rerun' | null; lastFeedback: string | null } {
+  if (!content) return { totalRuns: 0, lastRunType: null, lastFeedback: null };
+
+  const initialRuns = (content.match(/## Pipeline Output — 초기 실행/g) || []).length;
+  const reruns = (content.match(/## Pipeline Output — 재실행/g) || []).length;
+  // 이전 포맷 호환 (구분 없는 Pipeline Output)
+  const legacyRuns = (content.match(/## Pipeline Output \(/g) || []).length;
+  const totalRuns = initialRuns + reruns + legacyRuns;
+
+  const isRerun = reruns > 0;
+  let lastFeedback: string | null = null;
+  if (isRerun) {
+    const feedbackMatches = content.match(/> \*\*피드백\*\*: (.+)/g);
+    if (feedbackMatches && feedbackMatches.length > 0) {
+      lastFeedback = feedbackMatches[feedbackMatches.length - 1].replace(/> \*\*피드백\*\*: /, '');
+    }
+  }
+
+  return {
+    totalRuns,
+    lastRunType: totalRuns === 0 ? null : isRerun ? 'rerun' : 'initial',
+    lastFeedback,
+  };
+}
+
 export function TaskModal() {
   const taskModalId = useUIStore((s) => s.taskModalId);
   const closeTaskModal = useUIStore((s) => s.closeTaskModal);
@@ -158,7 +219,10 @@ export function TaskModal() {
   const [feedback, setFeedback] = useState('');
   const [loading, setLoading] = useState(false);
   const [contextContent, setContextContent] = useState<string | null>(null);
-  const [showContext, setShowContext] = useState(false);
+  const [promptContent, setPromptContent] = useState<string | null>(null);
+  const [isFullScreen, setIsFullScreen] = useState(false);
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({ finalResult: true });
+  const [showPrompt, setShowPrompt] = useState(false);
   const liveLogRef = useRef<HTMLDivElement>(null);
 
   const task = taskModalId ? tasks[taskModalId] : null;
@@ -169,6 +233,11 @@ export function TaskModal() {
 
   // Extract Changes section for REVIEW status
   const changesSection = extractChangesSection(contextContent);
+
+  // Extract Code Review section for REVIEW status
+  const reviewInfo = extractReviewSection(contextContent);
+  const securityInfo = extractSecuritySection(contextContent);
+  const runHistory = extractRunHistory(contextContent);
 
   // Auto-scroll live output to bottom
   useEffect(() => {
@@ -183,10 +252,14 @@ export function TaskModal() {
       api.get<{ content: string }>(`/tasks/${taskModalId}/context`)
         .then(res => setContextContent(res.content))
         .catch(() => setContextContent(null));
+      api.get<{ content: string | null }>(`/tasks/${taskModalId}/prompt`)
+        .then(res => setPromptContent(res.content || null))
+        .catch(() => setPromptContent(null));
     }
     return () => {
       setContextContent(null);
-      setShowContext(false);
+      setPromptContent(null);
+      setOpenSections({ finalResult: true });
     };
   }, [taskModalId, task?.status]);
 
@@ -236,17 +309,60 @@ export function TaskModal() {
     try {
       // Clear previous pipeline output before rerun
       clearPipelineOutput(task.id);
+      const toastId = toast.loading('AI 작업 재실행 중...');
+      // WebSocket task:started보다 먼저 등록해야 중복 토스트 방지
+      useToastStore.getState().setPipelineToastId(toastId);
       await api.post(`/tasks/${task.id}/transition`, {
         target_state: 'READY',
         feedback: feedback.trim()
       });
       await api.post(`/tasks/${task.id}/run`);
-      toast.success('AI가 작업을 다시 시작합니다');
       setFeedback('');
       await fetchTasks();
       closeTaskModal();
     } catch (err) {
       toast.error('재실행 실패');
+      useToastStore.getState().setPipelineToastId(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStart = async () => {
+    if (!task) return;
+    setLoading(true);
+    try {
+      clearPipelineOutput(task.id);
+      const toastId = toast.loading('AI 작업 시작 중...');
+      // WebSocket task:started보다 먼저 등록해야 중복 토스트 방지
+      useToastStore.getState().setPipelineToastId(toastId);
+      await api.post(`/tasks/${task.id}/run`);
+      await fetchTasks();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '작업 시작 실패');
+      useToastStore.getState().setPipelineToastId(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRestart = async () => {
+    if (!task) return;
+    setLoading(true);
+    try {
+      // Cancel running pipeline first
+      await api.post(`/tasks/${task.id}/cancel`).catch(() => {});
+      // Transition back to READY
+      await api.post(`/tasks/${task.id}/transition`, { target_state: 'READY' });
+      // Start again
+      clearPipelineOutput(task.id);
+      const toastId = toast.loading('AI 작업 재시작 중...');
+      useToastStore.getState().setPipelineToastId(toastId);
+      await api.post(`/tasks/${task.id}/run`);
+      await fetchTasks();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '재시작 실패');
+      useToastStore.getState().setPipelineToastId(null);
     } finally {
       setLoading(false);
     }
@@ -261,7 +377,7 @@ export function TaskModal() {
   }
 
   return (
-    <Modal isOpen={true} onClose={closeTaskModal} title={task.id} size="lg">
+    <Modal isOpen={true} onClose={closeTaskModal} title={task.id} size={isFullScreen ? 'full' : 'lg'}>
       <div className="space-y-4">
         <div className="flex items-center gap-2">
           <div className={cn('w-3 h-3 rounded-full', STATUS_COLORS[task.status])} />
@@ -269,6 +385,13 @@ export function TaskModal() {
           <Badge className={cn('ml-2', PRIORITY_COLORS[task.priority])}>
             {task.priority}
           </Badge>
+          <button
+            onClick={() => setIsFullScreen(!isFullScreen)}
+            className="ml-auto p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400"
+            title={isFullScreen ? '기본 크기' : '전체 화면'}
+          >
+            {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
         </div>
 
         <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
@@ -276,7 +399,9 @@ export function TaskModal() {
         </h2>
 
         {task.description && (
-          <p className="text-gray-600 dark:text-gray-300">{task.description}</p>
+          <div className="prose prose-sm dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-table:text-xs max-w-none text-gray-600 dark:text-gray-300 overflow-auto max-h-64">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{task.description}</ReactMarkdown>
+          </div>
         )}
 
         <div className="grid grid-cols-2 gap-4 text-sm">
@@ -339,21 +464,60 @@ export function TaskModal() {
           </div>
         )}
 
+        {/* Restart Action - IN_PROGRESS status */}
+        {task.status === 'IN_PROGRESS' && (
+          <div className="flex gap-2">
+            <Button
+              variant="warning"
+              onClick={handleRestart}
+              disabled={loading}
+            >
+              <StopCircle className="w-4 h-4 mr-1" />
+              중지 & 재시작
+            </Button>
+          </div>
+        )}
+
         {/* Final Result - shown in REVIEW status */}
         {task.status === 'REVIEW' && (
           <div className="border-t dark:border-gray-700 pt-4">
-            <h3 className="flex items-center gap-2 font-medium mb-2 text-green-600 dark:text-green-400">
+            <button
+              onClick={() => setOpenSections(s => ({ ...s, finalResult: !s.finalResult }))}
+              className="flex items-center gap-2 font-medium mb-2 text-green-600 dark:text-green-400 hover:opacity-80 w-full"
+            >
+              {openSections.finalResult ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
               <Check className="w-4 h-4" />
               Final Result
-            </h3>
-            {finalResult ? (
-              <div className="p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg overflow-auto max-h-64 prose prose-sm dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-table:text-xs max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalResult}</ReactMarkdown>
-              </div>
-            ) : (
-              <div className="p-4 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm text-gray-500">
-                AI 작업 결과는 아래 Pipeline Output에서 확인하세요.
-              </div>
+              {runHistory.totalRuns > 1 && (
+                <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded-full">
+                  {runHistory.totalRuns}차 실행
+                </span>
+              )}
+              {runHistory.lastRunType === 'rerun' && (
+                <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 rounded-full">
+                  피드백 반영
+                </span>
+              )}
+            </button>
+            {openSections.finalResult && (
+              <>
+                {finalResult ? (
+                  <div className="space-y-2">
+                    {runHistory.lastFeedback && (
+                      <div className="px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border-l-4 border-blue-400 text-sm text-blue-700 dark:text-blue-300">
+                        <span className="font-medium">반영된 피드백:</span> {runHistory.lastFeedback}
+                      </div>
+                    )}
+                    <div className="p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg overflow-auto max-h-[32rem] prose prose-sm dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-table:text-xs max-w-none">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalResult}</ReactMarkdown>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-4 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm text-gray-500">
+                    AI 작업 결과는 아래 Pipeline Output에서 확인하세요.
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -361,13 +525,104 @@ export function TaskModal() {
         {/* Changes (Before → After) - shown in REVIEW status */}
         {task.status === 'REVIEW' && changesSection && (
           <div className="border-t dark:border-gray-700 pt-4">
-            <h3 className="flex items-center gap-2 font-medium mb-2 text-blue-600 dark:text-blue-400">
+            <button
+              onClick={() => setOpenSections(s => ({ ...s, changes: !s.changes }))}
+              className="flex items-center gap-2 font-medium mb-2 text-blue-600 dark:text-blue-400 hover:opacity-80 w-full"
+            >
+              {openSections.changes ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
               <GitCommit className="w-4 h-4" />
               Changes (Before → After)
-            </h3>
-            <div className="p-4 bg-slate-900 border border-slate-700 rounded-lg overflow-auto max-h-80 prose prose-sm prose-invert prose-headings:text-base prose-headings:font-semibold prose-headings:text-slate-200 prose-p:my-1 prose-p:text-slate-300 prose-ul:my-1 prose-li:my-0 prose-table:text-xs prose-th:text-slate-300 prose-td:text-slate-400 max-w-none diff-content">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{changesSection}</ReactMarkdown>
-            </div>
+            </button>
+            {openSections.changes && (
+              <div className="p-4 bg-slate-900 border border-slate-700 rounded-lg overflow-auto max-h-[32rem] prose prose-sm prose-invert prose-headings:text-base prose-headings:font-semibold prose-headings:text-slate-200 prose-p:my-1 prose-p:text-slate-300 prose-ul:my-1 prose-li:my-0 prose-table:text-xs prose-th:text-slate-300 prose-td:text-slate-400 max-w-none diff-content">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{changesSection}</ReactMarkdown>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Prompt History - shown when available */}
+        {promptContent && (
+          <div className="border border-purple-200 dark:border-purple-800 rounded-lg overflow-hidden">
+            <button
+              onClick={() => setShowPrompt(!showPrompt)}
+              className="w-full flex items-center justify-between p-3 bg-purple-50 dark:bg-purple-900/20 hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                <span className="font-medium text-purple-900 dark:text-purple-100">프롬프트 이력</span>
+              </div>
+              <ChevronDown className={cn('w-4 h-4 text-purple-600 transition-transform', showPrompt && 'rotate-180')} />
+            </button>
+            {showPrompt && (
+              <div className="p-4 bg-white dark:bg-gray-900 max-h-96 overflow-y-auto">
+                <pre className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap font-mono">{promptContent}</pre>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Code Review - shown in REVIEW status */}
+        {task.status === 'REVIEW' && (
+          <div className="border-t dark:border-gray-700 pt-4">
+            <button
+              onClick={() => setOpenSections(s => ({ ...s, codeReview: !s.codeReview }))}
+              className={cn("flex items-center gap-2 font-medium mb-2 hover:opacity-80 w-full", reviewInfo.hasCritical ? 'text-red-600 dark:text-red-400' : 'text-purple-600 dark:text-purple-400')}
+            >
+              {openSections.codeReview ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              <FileText className="w-4 h-4" />
+              코드 리뷰
+              {reviewInfo.hasCritical && (
+                <span className="px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 rounded-full">
+                  치명적
+                </span>
+              )}
+            </button>
+            {openSections.codeReview && (
+              reviewInfo.markdown ? (
+                <div className={cn(
+                  "p-4 border rounded-lg overflow-auto max-h-[32rem] prose prose-sm dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-table:text-xs max-w-none",
+                  reviewInfo.hasCritical
+                    ? "bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-800"
+                    : "bg-purple-50 dark:bg-purple-900/10 border-purple-200 dark:border-purple-800"
+                )}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{reviewInfo.markdown}</ReactMarkdown>
+                </div>
+              ) : (
+                <div className="p-4 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm text-gray-500">
+                  코드 리뷰 없음
+                </div>
+              )
+            )}
+          </div>
+        )}
+
+        {/* Security Review - shown in REVIEW status */}
+        {task.status === 'REVIEW' && securityInfo.markdown && (
+          <div className="border-t dark:border-gray-700 pt-4">
+            <button
+              onClick={() => setOpenSections(s => ({ ...s, security: !s.security }))}
+              className={cn("flex items-center gap-2 font-medium mb-2 hover:opacity-80 w-full", securityInfo.hasCritical ? 'text-red-600 dark:text-red-400' : 'text-orange-600 dark:text-orange-400')}
+            >
+              {openSections.security ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              <AlertCircle className="w-4 h-4" />
+              보안 점검
+              {securityInfo.hasCritical && (
+                <span className="px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 rounded-full">
+                  치명적
+                </span>
+              )}
+            </button>
+            {openSections.security && (
+              <div className={cn(
+                "p-4 border rounded-lg overflow-auto max-h-[32rem] prose prose-sm dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-table:text-xs max-w-none",
+                securityInfo.hasCritical
+                  ? "bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-800"
+                  : "bg-orange-50 dark:bg-orange-900/10 border-orange-200 dark:border-orange-800"
+              )}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{securityInfo.markdown}</ReactMarkdown>
+              </div>
+            )}
           </div>
         )}
 
@@ -375,14 +630,15 @@ export function TaskModal() {
         {contextContent && (
           <div className="border-t dark:border-gray-700 pt-4">
             <button
-              onClick={() => setShowContext(!showContext)}
-              className="flex items-center gap-2 font-medium mb-2 hover:text-blue-600"
+              onClick={() => setOpenSections(s => ({ ...s, pipeline: !s.pipeline }))}
+              className="flex items-center gap-2 font-medium mb-2 hover:text-blue-600 w-full"
             >
-              {showContext ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              {openSections.pipeline ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              <Terminal className="w-4 h-4" />
               Pipeline Output
             </button>
-            {showContext && (
-              <div className="p-4 bg-gray-50 dark:bg-gray-900 rounded-lg overflow-auto max-h-96 prose prose-sm dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-table:text-xs max-w-none">
+            {openSections.pipeline && (
+              <div className="p-4 bg-gray-50 dark:bg-gray-900 rounded-lg overflow-auto max-h-[32rem] prose prose-sm dark:prose-invert prose-headings:text-base prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-li:my-0 prose-table:text-xs max-w-none">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{contextContent}</ReactMarkdown>
               </div>
             )}
@@ -405,6 +661,22 @@ export function TaskModal() {
                   </p>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Start Action - READY status */}
+        {task.status === 'READY' && (
+          <div className="border-t dark:border-gray-700 pt-4">
+            <div className="flex gap-2">
+              <Button
+                variant="success"
+                onClick={handleStart}
+                disabled={loading}
+              >
+                <Play className="w-4 h-4 mr-1" />
+                작업 시작
+              </Button>
             </div>
           </div>
         )}
