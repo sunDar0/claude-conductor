@@ -4,7 +4,7 @@ import { GripVertical, GitBranch, Clock, Play } from 'lucide-react';
 import { Badge } from '../common/Badge';
 import { useUIStore } from '../../store/uiStore';
 import { api } from '../../lib/api';
-import { toast } from '../../store/toastStore';
+import { toast, useToastStore } from '../../store/toastStore';
 import type { Task } from '../../types';
 import { cn, formatRelativeTime } from '../../lib/utils';
 
@@ -34,11 +34,13 @@ export function TaskCard({ task, isDragging }: Props) {
   const handleRunTask = async (e: React.MouseEvent) => {
     e.stopPropagation();
     const toastId = toast.loading('AI 작업 시작 중...');
+    // WebSocket task:started보다 먼저 등록해야 중복 토스트 방지
+    useToastStore.getState().setPipelineToastId(toastId);
     try {
       await api.post(`/tasks/${task.id}/run`);
-      toast.update(toastId, 'success', 'AI가 작업을 시작했습니다');
     } catch (err) {
       toast.update(toastId, 'error', err instanceof Error ? err.message : '작업 시작 실패');
+      useToastStore.getState().setPipelineToastId(null);
     }
   };
 

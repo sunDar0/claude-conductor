@@ -4,7 +4,7 @@ import { useTaskStore } from '../store/taskStore';
 import { useServerStore } from '../store/serverStore';
 import { useAgentStore } from '../store/agentStore';
 import { useUIStore } from '../store/uiStore';
-import { toast } from '../store/toastStore';
+import { toast, useToastStore } from '../store/toastStore';
 import type { Task, RunningServer, Activity } from '../types';
 
 export function useWebSocket() {
@@ -44,7 +44,16 @@ export function useWebSocket() {
           if (startPayload.id) {
             clearPipelineOutput(startPayload.id);
           }
-          toast.info('AI가 작업을 시작했습니다');
+          // Check if TaskCard already created a loading toast
+          const existingToastId = useToastStore.getState().getPipelineToastId();
+          if (existingToastId) {
+            // Update existing toast from loading to info
+            toast.update(existingToastId, 'info', 'AI가 작업을 시작했습니다');
+          } else {
+            // Create new toast if auto-started
+            const toastId = toast.info('AI가 작업을 시작했습니다');
+            useToastStore.getState().setPipelineToastId(toastId);
+          }
           fetchTasks();
           break;
         }
@@ -52,19 +61,33 @@ export function useWebSocket() {
           // Manual start - just refresh, no toast (auto-pipeline will send task:started)
           fetchTasks();
           break;
-        case 'task:review':
+        case 'task:review': {
           // AI completed the task (only handle colon notation from auto-pipeline)
-          toast.success('AI 작업이 완료되었습니다. 검토해주세요.');
+          const existingToastId = useToastStore.getState().getPipelineToastId();
+          if (existingToastId) {
+            toast.update(existingToastId, 'success', 'AI 작업이 완료되었습니다. 검토해주세요.');
+            useToastStore.getState().setPipelineToastId(null);
+          } else {
+            toast.success('AI 작업이 완료되었습니다. 검토해주세요.');
+          }
           fetchTasks();
           break;
+        }
         case 'task.review':
           // Just refresh, no duplicate toast
           fetchTasks();
           break;
-        case 'pipeline:error':
-          toast.error(`작업 오류: ${(payload as { error?: string })?.error || '알 수 없는 오류'}`);
+        case 'pipeline:error': {
+          const pipelineErrToastId = useToastStore.getState().getPipelineToastId();
+          if (pipelineErrToastId) {
+            toast.update(pipelineErrToastId, 'error', `작업 오류: ${(payload as { error?: string })?.error || '알 수 없는 오류'}`);
+            useToastStore.getState().setPipelineToastId(null);
+          } else {
+            toast.error(`작업 오류: ${(payload as { error?: string })?.error || '알 수 없는 오류'}`);
+          }
           fetchTasks();
           break;
+        }
         case 'pipeline:queued':
           toast.info(`작업이 대기열에 추가됨 (${(payload as { queue_position?: number })?.queue_position || 1}번째)`);
           break;

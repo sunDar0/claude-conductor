@@ -9,13 +9,17 @@ interface ToastItem {
 
 interface ToastState {
   toasts: ToastItem[];
+  pipelineToastId: string | null;
   addToast: (type: ToastType, message: string) => string;
   removeToast: (id: string) => void;
   updateToast: (id: string, type: ToastType, message: string) => void;
+  setPipelineToastId: (id: string | null) => void;
+  getPipelineToastId: () => string | null;
 }
 
-export const useToastStore = create<ToastState>((set) => ({
+export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
+  pipelineToastId: null,
 
   addToast: (type, message) => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -37,6 +41,14 @@ export const useToastStore = create<ToastState>((set) => ({
         t.id === id ? { ...t, type, message } : t
       ),
     }));
+  },
+
+  setPipelineToastId: (id) => {
+    set({ pipelineToastId: id });
+  },
+
+  getPipelineToastId: () => {
+    return get().pipelineToastId;
   },
 }));
 
