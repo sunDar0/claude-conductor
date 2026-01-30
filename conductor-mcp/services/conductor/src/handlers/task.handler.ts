@@ -50,12 +50,32 @@ export async function handleTaskCreate(
   const taskId = generateTaskId(registry.counter);
   const now = nowISO();
 
+  // title 자동 생성: description에서 추출
+  if (!input.title || !input.title.trim()) {
+    const desc = input.description || '';
+    const firstLine = desc.split('\n')[0].trim();
+    input.title = firstLine.length > 50
+      ? firstLine.substring(0, 50) + '...'
+      : firstLine || 'Untitled Task';
+  }
+
   // project_id가 없으면 현재 선택된 프로젝트 사용
   const projectId = input.project_id || await getCurrentProjectId() || 'default';
+
+  // Resolve project path for fallback
+  let projectPath: string | undefined;
+  if (projectId && projectId !== 'default') {
+    const { getProjectById } = await import('../utils/project-manager.js');
+    const project = await getProjectById(projectId);
+    if (project) {
+      projectPath = project.path;
+    }
+  }
 
   const task: Task = {
     id: taskId,
     project_id: projectId,
+    project_path: projectPath,
     title: input.title,
     description: input.description || '',
     status: 'READY',
@@ -68,6 +88,7 @@ export async function handleTaskCreate(
     context_file: `.claude/tasks/${taskId}/context.md`,
     changelog_versions: [],
     feedback_history: [],
+    session_id: null,
   };
 
   registry.tasks[taskId] = task;
@@ -254,7 +275,15 @@ Allowed: ${VALID_TRANSITIONS[task.status].join(', ') || 'none'}`,
   task.status = input.target_state;
   task.updated_at = now;
   if (input.target_state === 'DONE') task.completed_at = now;
+  if (input.target_state === 'DONE' || input.target_state === 'BACKLOG') task.session_id = null;
   if (input.feedback) {
+    // 기존 미해결 피드백을 resolved 처리 (재실행 시 최신 피드백만 활성)
+    for (const fb of task.feedback_history) {
+      if (!fb.resolved) {
+        fb.resolved = true;
+        fb.resolved_at = now;
+      }
+    }
     const feedbackEntry = {
       id: `FB-${Date.now()}`,
       content: input.feedback,
@@ -268,7 +297,7 @@ Allowed: ${VALID_TRANSITIONS[task.status].join(', ') || 'none'}`,
       feedback: input.feedback,
       feedbackId: feedbackEntry.id,
       totalFeedback: task.feedback_history.length
-    }, 'Feedback added to task');
+    }, 'Feedback added to task (previous unresolved marked as resolved)');
   }
 
   await writeTaskRegistry(registry);

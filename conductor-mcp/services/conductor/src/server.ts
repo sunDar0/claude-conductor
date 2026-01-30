@@ -149,7 +149,7 @@ export async function createMCPServer(): Promise<Server> {
             },
             project_id: { type: 'string', description: 'Project ID (defaults to current project)' },
           },
-          required: ['title'],
+          required: ['description'],
         },
       },
       {

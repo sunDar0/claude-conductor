@@ -30,8 +30,8 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
       return;
     }
 
-    if (!title.trim()) {
-      setError('Title is required');
+    if (!title.trim() && !description.trim()) {
+      setError('설명을 입력해주세요');
       return;
     }
 
@@ -84,25 +84,25 @@ export function CreateTaskModal({ isOpen, onClose }: CreateTaskModalProps) {
           )}
 
           <div>
-            <label className="block text-sm font-medium mb-1">Title *</label>
+            <label className="block text-sm font-medium mb-1">제목 <span className="text-gray-400 font-normal">(비우면 자동 생성)</span></label>
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Enter task title"
-              autoFocus
+              placeholder="비우면 설명에서 자동 생성됩니다"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1">Description</label>
+            <label className="block text-sm font-medium mb-1">설명 *</label>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={4}
               className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-              placeholder="Describe the task..."
+              placeholder="작업 내용을 설명하세요..."
+              autoFocus
             />
           </div>
 
