@@ -1,6 +1,6 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { GripVertical, GitBranch, Clock, Play } from 'lucide-react';
+import { GripVertical, GitBranch, Clock, Play, Trash2 } from 'lucide-react';
 import { Badge } from '../common/Badge';
 import { useUIStore } from '../../store/uiStore';
 import { api } from '../../lib/api';
@@ -29,6 +29,20 @@ export function TaskCard({ task, isDragging }: Props) {
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
+  };
+
+  const handleDeleteTask = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm(`"${task.title}" 태스크를 삭제하시겠습니까?`)) return;
+    try {
+      await api.delete(`/tasks/${task.id}`);
+      toast.success('태스크가 삭제되었습니다.');
+      // Refresh tasks
+      const { useTaskStore } = await import('../../store/taskStore');
+      useTaskStore.getState().fetchTasks();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '삭제 실패');
+    }
   };
 
   const handleRunTask = async (e: React.MouseEvent) => {
@@ -67,6 +81,15 @@ export function TaskCard({ task, isDragging }: Props) {
         <Badge className={cn('text-xs', PRIORITY_COLORS[task.priority])}>
           {task.priority}
         </Badge>
+        {(task.status === 'READY' || task.status === 'BACKLOG') && (
+          <button
+            onClick={handleDeleteTask}
+            className="p-1 rounded-full hover:bg-red-100 dark:hover:bg-red-900 text-gray-400 hover:text-red-500"
+            title="태스크 삭제"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        )}
         {task.status === 'READY' && (
           <button
             onClick={handleRunTask}

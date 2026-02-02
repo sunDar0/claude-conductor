@@ -1,4 +1,4 @@
-import { AlertCircle, Calendar, Check, Clock, FileText, GitBranch, Play, RotateCcw, X, ChevronDown, ChevronUp, Terminal, GitCommit, StopCircle, Maximize2, Minimize2 } from 'lucide-react';
+import { AlertCircle, Calendar, Check, Clock, FileText, GitBranch, Play, RotateCcw, X, ChevronDown, ChevronUp, Terminal, GitCommit, StopCircle, Maximize2, Minimize2, Trash2 } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -325,6 +325,19 @@ export function TaskModal() {
       useToastStore.getState().setPipelineToastId(null);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!task) return;
+    if (!confirm(`"${task.title}" 태스크를 삭제하시겠습니까?`)) return;
+    try {
+      await api.delete(`/tasks/${task.id}`);
+      toast.success('태스크가 삭제되었습니다.');
+      await fetchTasks();
+      closeTaskModal();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '삭제 실패');
     }
   };
 
@@ -676,6 +689,14 @@ export function TaskModal() {
               >
                 <Play className="w-4 h-4 mr-1" />
                 작업 시작
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleDelete}
+                disabled={loading}
+              >
+                <Trash2 className="w-4 h-4 mr-1" />
+                삭제
               </Button>
             </div>
           </div>
