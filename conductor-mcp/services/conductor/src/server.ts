@@ -42,6 +42,7 @@ import { updateAgentCache, updateAgentRolesCache } from './http-server.js';
 import { AgentRegistry } from './orchestration/agent-registry.js';
 import { SkillLoader } from './orchestration/skill-loader.js';
 import { AgentManager } from './orchestration/agent-manager.js';
+import { AgentExecutor } from './orchestration/agent-executor.js';
 import { ParallelEngine } from './orchestration/parallel-engine.js';
 import type { AgentRole, ExecutionStrategy, OrchestrationPlan } from './types/agent.types.js';
 import { v4 as uuid } from 'uuid';
@@ -68,18 +69,21 @@ async function initOrchestration(): Promise<void> {
     return;
   }
 
+  const homeDir = process.env.HOME || '/root';
   const workspaceDir = process.env.WORKSPACE_DIR || '/workspace';
 
   try {
-    const registry = new AgentRegistry(workspaceDir);
+    // AgentRegistry and SkillLoader read from ~/.claude/ (global Claude config)
+    const registry = new AgentRegistry(homeDir);
     await registry.initialize();
 
-    const skillLoader = new SkillLoader(workspaceDir);
+    const skillLoader = new SkillLoader(homeDir);
 
     agentManager = new AgentManager(registry, skillLoader, redis);
     await agentManager.restoreInstances();
 
-    parallelEngine = new ParallelEngine(agentManager);
+    const agentExecutor = new AgentExecutor();
+    parallelEngine = new ParallelEngine(agentManager, agentExecutor);
 
     // Sync agent state to HTTP API cache
     const syncAgentCache = () => {
@@ -119,7 +123,7 @@ export async function createMCPServer(): Promise<Server> {
   await initOrchestration();
 
   // Initialize auto pipeline (Claude CLI automation)
-  initAutoPipeline(redis, publishEvent);
+  initAutoPipeline(redis, publishEvent, parallelEngine, agentManager);
   log.info('Auto pipeline initialized');
 
   const server = new Server(
