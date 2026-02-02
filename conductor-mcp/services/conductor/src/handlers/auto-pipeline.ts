@@ -490,25 +490,13 @@ function buildOrchestrationPlan(taskId: string, task: Task): OrchestrationPlan {
     timeout_ms: 30 * 60 * 1000, // 30 minutes
   });
 
-  // Stage 2: Review (parallel - code review + security review)
-  // Only add review stage for implementation/bugfix/refactoring tasks
-  if (['implementation', 'bugfix', 'refactoring', 'frontend'].includes(taskType)) {
-    stages.push({
-      stage_id: `stage-review-${randomUUID().slice(0, 8)}`,
-      name: '리뷰 & 보안 점검',
-      agents: [
-        { role: 'review', skills: [] },
-        { role: 'security', skills: [] },
-      ],
-      parallel: true,
-      timeout_ms: 10 * 60 * 1000, // 10 minutes
-    });
-  }
+  // Stage 2: Review is handled directly via runCodeReview/runSecurityReview
+  // after orchestration completes (not via agent spawn) for reliable baseCommit-based diff
 
   return {
     id: `plan-${taskId}-${randomUUID().slice(0, 8)}`,
     task_id: taskId,
-    strategy: stages.length > 1 ? 'pipeline' : 'sequential',
+    strategy: 'sequential',
     stages,
     created_at: new Date().toISOString(),
     status: 'pending',
@@ -551,6 +539,10 @@ async function runOrchestrated(taskId: string, workDir: string, task: Task, proj
     }
   }
 
+  // Capture base commit before execution for review diff
+  const baseCommit = await captureBaseCommit(workDir);
+  log.info({ taskId, baseCommit }, 'Captured base commit before orchestration');
+
   try {
     // Execute the orchestration plan
     const result = await parallelEngine.execute(plan, workDir);
@@ -578,12 +570,52 @@ async function runOrchestrated(taskId: string, workDir: string, task: Task, proj
       }
     }
 
+    // Run code review & security review using baseCommit-based diff (same as direct CLI path)
+    let reviewSection = '';
+    const taskType = detectTaskType(task);
+    if (['implementation', 'bugfix', 'refactoring', 'frontend'].includes(taskType)) {
+      try {
+        await publishEventFn('pipeline:output', {
+          task_id: taskId,
+          event_type: 'info',
+          output: `🔍 AI 코드 리뷰 & 보안 점검 실행 중...`,
+          timestamp: new Date().toISOString(),
+        });
+
+        const [reviewResult, securityResult] = await Promise.all([
+          runCodeReview(taskId, workDir, baseCommit || undefined),
+          runSecurityReview(taskId, workDir, baseCommit || undefined),
+        ]);
+
+        log.info({ taskId, reviewHasCritical: reviewResult.hasCritical, securityHasCritical: securityResult.hasCritical }, 'AI review & security check completed');
+
+        if (reviewResult.reviewMarkdown) {
+          reviewSection += `\n\n${reviewResult.reviewMarkdown}`;
+        }
+        if (securityResult.securityMarkdown) {
+          reviewSection += `\n\n${securityResult.securityMarkdown}`;
+        }
+
+        const hasCritical = reviewResult.hasCritical || securityResult.hasCritical;
+        await publishEventFn('pipeline:output', {
+          task_id: taskId,
+          event_type: hasCritical ? 'error' : 'complete',
+          output: hasCritical
+            ? `⚠️ AI 리뷰 완료 - 치명적 이슈 발견`
+            : `✅ AI 코드 리뷰 & 보안 점검 완료`,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (reviewError) {
+        log.warn({ taskId, error: reviewError }, 'AI review failed (non-blocking)');
+      }
+    }
+
     // Save to context file
     const contextPath = getTaskContextPath(taskId);
     let existingContext = '';
     try { existingContext = await fs.readFile(contextPath, 'utf-8'); } catch { /* first run */ }
     const runLabel = `## Orchestrated Pipeline Output (${new Date().toISOString()})`;
-    const updatedContext = `${existingContext}\n\n${runLabel}\n\n${readableOutput}`;
+    const updatedContext = `${existingContext}\n\n${runLabel}\n\n${readableOutput}${reviewSection}`;
     await fs.writeFile(contextPath, updatedContext, 'utf-8');
 
     // Check if any agent failed
@@ -1180,11 +1212,13 @@ export async function triggerPipeline(taskId: string): Promise<{ success: boolea
       await publishEventFn?.('task:started', { id: taskId, status: 'IN_PROGRESS' });
       // Publish activity event for dashboard
       await publishEventFn?.('activity', createActivity('task.started', taskId, `AI started working on: ${task.title}`));
-      // Add virtual pipeline agent for dashboard display
-      addPipelineAgent(taskId, task.title);
-      // Notify dashboard about agent change
-      await publishEventFn?.('agent.spawned', { agentId: `pipeline-${taskId}`, role: 'code', taskId });
-      log.info({ taskId }, 'Task → IN_PROGRESS (manual trigger)');
+      // Add virtual pipeline agent only for direct CLI path (orchestration manages its own agents)
+      const willUseOrchestration = parallelEngine && !task.session_id && task.feedback_history.filter(fb => !fb.resolved).length === 0;
+      if (!willUseOrchestration) {
+        addPipelineAgent(taskId, task.title);
+        await publishEventFn?.('agent.spawned', { agentId: `pipeline-${taskId}`, role: 'code', taskId });
+      }
+      log.info({ taskId, orchestrated: !!willUseOrchestration }, 'Task → IN_PROGRESS (manual trigger)');
     }
 
     await runAutoPipeline(taskId);
