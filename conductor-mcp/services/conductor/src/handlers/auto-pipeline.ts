@@ -10,6 +10,10 @@ import * as fs from 'fs/promises';
 import { nowISO } from '../utils/date.js';
 import { addPipelineAgent, updatePipelineAgent, removePipelineAgent } from '../http-server.js';
 import { runCodeReview, runSecurityReview } from './review.handler.js';
+import { ParallelEngine } from '../orchestration/parallel-engine.js';
+import { AgentExecutor } from '../orchestration/agent-executor.js';
+import { AgentManager } from '../orchestration/agent-manager.js';
+import type { OrchestrationPlan, OrchestrationStage, AgentRole } from '../types/agent.types.js';
 
 // Git 변경사항 수집을 위한 인터페이스
 interface GitChangeInfo {
@@ -115,6 +119,8 @@ let redis: Redis | null = null;
 let publishEventFn: ((event: string, data: unknown) => Promise<void>) | null = null;
 const activePipelines: Map<string, ChildProcess> = new Map();
 const cancelledPipelines: Set<string> = new Set();
+let parallelEngine: ParallelEngine | null = null;
+let agentManager: AgentManager | null = null;
 
 // Project-based queue: one task at a time per project
 const projectQueues: Map<string, string[]> = new Map(); // projectId -> taskId[]
@@ -122,10 +128,14 @@ const runningProjects: Set<string> = new Set(); // projectIds currently running
 
 export function initAutoPipeline(
   redisClient: Redis | null,
-  publishEvent: (event: string, data: unknown) => Promise<void>
+  publishEvent: (event: string, data: unknown) => Promise<void>,
+  engine?: ParallelEngine | null,
+  manager?: AgentManager | null,
 ): void {
   redis = redisClient;
   publishEventFn = publishEvent;
+  parallelEngine = engine || null;
+  agentManager = manager || null;
 
   log.info('Initialized - using Claude CLI');
 
@@ -272,9 +282,19 @@ export async function runAutoPipeline(taskId: string): Promise<void> {
       log.warn({ taskId, error: err }, 'Failed to save prompt.md');
     }
 
-    // Run Claude CLI - will transition to IN_PROGRESS when first output received
-    const feedbackInfo = unresolvedFeedback.map(fb => fb.content);
-    await runClaudeCLI(taskId, workDir, prompt, projectId, existingSessionId, feedbackInfo.length > 0 ? feedbackInfo : undefined);
+    // Choose execution path: orchestrated vs direct CLI
+    const useOrchestration = parallelEngine && !isResume && unresolvedFeedback.length === 0;
+
+    if (useOrchestration) {
+      // Orchestrated execution: multi-agent pipeline
+      log.info({ taskId }, 'Using orchestrated execution');
+      await runOrchestrated(taskId, workDir, task, projectId);
+    } else {
+      // Direct CLI execution: feedback/resume or no engine available
+      log.info({ taskId, reason: isResume ? 'resume' : unresolvedFeedback.length > 0 ? 'feedback' : 'no-engine' }, 'Using direct CLI execution');
+      const feedbackInfo = unresolvedFeedback.map(fb => fb.content);
+      await runClaudeCLI(taskId, workDir, prompt, projectId, existingSessionId, feedbackInfo.length > 0 ? feedbackInfo : undefined);
+    }
 
   } catch (error) {
     log.error({ taskId, error }, 'Error processing task');
@@ -446,6 +466,202 @@ function detectTaskType(task: Task): string {
   }
 
   return 'implementation';
+}
+
+function buildOrchestrationPlan(taskId: string, task: Task): OrchestrationPlan {
+  const taskType = detectTaskType(task);
+  const stages: OrchestrationStage[] = [];
+
+  // Stage 1: Main execution (always sequential - one agent does the work)
+  const mainRole: AgentRole = taskType === 'review' ? 'review'
+    : taskType === 'testing' ? 'test'
+    : taskType === 'documentation' ? 'docs'
+    : taskType === 'security' ? 'security'
+    : 'code';
+
+  stages.push({
+    stage_id: `stage-main-${randomUUID().slice(0, 8)}`,
+    name: '메인 작업',
+    agents: [{
+      role: mainRole,
+      skills: [],
+    }],
+    parallel: false,
+    timeout_ms: 30 * 60 * 1000, // 30 minutes
+  });
+
+  // Stage 2: Review (parallel - code review + security review)
+  // Only add review stage for implementation/bugfix/refactoring tasks
+  if (['implementation', 'bugfix', 'refactoring', 'frontend'].includes(taskType)) {
+    stages.push({
+      stage_id: `stage-review-${randomUUID().slice(0, 8)}`,
+      name: '리뷰 & 보안 점검',
+      agents: [
+        { role: 'review', skills: [] },
+        { role: 'security', skills: [] },
+      ],
+      parallel: true,
+      timeout_ms: 10 * 60 * 1000, // 10 minutes
+    });
+  }
+
+  return {
+    id: `plan-${taskId}-${randomUUID().slice(0, 8)}`,
+    task_id: taskId,
+    strategy: stages.length > 1 ? 'pipeline' : 'sequential',
+    stages,
+    created_at: new Date().toISOString(),
+    status: 'pending',
+    task_context: {
+      title: task.title,
+      description: task.description || '',
+    },
+  };
+}
+
+async function runOrchestrated(taskId: string, workDir: string, task: Task, projectId: string): Promise<void> {
+  if (!parallelEngine || !publishEventFn) {
+    throw new Error('Orchestration engine not initialized');
+  }
+
+  const plan = buildOrchestrationPlan(taskId, task);
+
+  log.info({ taskId, planId: plan.id, stages: plan.stages.length, strategy: plan.strategy }, 'Orchestration plan created');
+
+  // Notify dashboard
+  await publishEventFn('pipeline:output', {
+    task_id: taskId,
+    event_type: 'info',
+    output: `🎭 오케스트레이션 시작 — ${plan.stages.length}단계, 전략: ${plan.strategy}`,
+    timestamp: new Date().toISOString(),
+  });
+
+  // Update agent context with task info
+  // The ParallelEngine will spawn agents via AgentManager which reads from AgentRegistry
+  // We need to ensure task context is passed through
+  if (agentManager) {
+    // Provide task context to the manager for future spawns
+    // This is done through the plan's agents in each stage
+    for (const stage of plan.stages) {
+      for (const agentConfig of stage.agents) {
+        // Context will be set during spawn in ParallelEngine
+        // We just log what's planned
+        log.info({ taskId, role: agentConfig.role, stage: stage.name }, 'Planned agent');
+      }
+    }
+  }
+
+  try {
+    // Execute the orchestration plan
+    const result = await parallelEngine.execute(plan, workDir);
+
+    log.info({ taskId, planId: plan.id, agentCount: result.agents.length }, 'Orchestration completed');
+
+    // Build readable output from orchestration results
+    let readableOutput = result.summary + '\n\n';
+
+    for (const agentResult of result.agents) {
+      readableOutput += `### ${agentResult.role} Agent (${agentResult.status})\n`;
+      if (agentResult.output) {
+        const output = agentResult.output as Record<string, unknown>;
+        readableOutput += `${output.message || JSON.stringify(output)}\n\n`;
+      }
+      if (agentResult.metrics) {
+        readableOutput += `> 소요: ${(agentResult.metrics.duration_ms / 1000).toFixed(1)}초, 도구 호출: ${agentResult.metrics.tool_calls}회\n\n`;
+      }
+    }
+
+    if (result.conflicts.length > 0) {
+      readableOutput += `\n### 충돌 사항\n`;
+      for (const c of result.conflicts) {
+        readableOutput += `- ${c.description}\n`;
+      }
+    }
+
+    // Save to context file
+    const contextPath = getTaskContextPath(taskId);
+    let existingContext = '';
+    try { existingContext = await fs.readFile(contextPath, 'utf-8'); } catch { /* first run */ }
+    const runLabel = `## Orchestrated Pipeline Output (${new Date().toISOString()})`;
+    const updatedContext = `${existingContext}\n\n${runLabel}\n\n${readableOutput}`;
+    await fs.writeFile(contextPath, updatedContext, 'utf-8');
+
+    // Check if any agent failed
+    const allSuccess = result.agents.every(a => a.status === 'success');
+
+    if (allSuccess) {
+      // Transition to REVIEW
+      const registry = await readTaskRegistry();
+      const updatedTask = registry.tasks[taskId];
+      if (updatedTask) {
+        updatedTask.status = 'REVIEW';
+        updatedTask.last_error = null;
+        updatedTask.updated_at = new Date().toISOString();
+        await writeTaskRegistry(registry);
+        await publishEventFn('task:review', { id: taskId, status: 'REVIEW' });
+        await publishEventFn('activity', createActivity('task.review', taskId, `Orchestration completed: ${updatedTask.title} - ready for review`));
+        updatePipelineAgent(taskId, 'completed');
+        await publishEventFn('agent.completed', { agentId: `pipeline-${taskId}` });
+        setTimeout(() => removePipelineAgent(taskId), 60000);
+        log.info({ taskId }, 'Orchestration completed, moved to REVIEW');
+      }
+    } else {
+      // Some agents failed
+      const failedAgents = result.agents.filter(a => a.status === 'failed');
+      const errorMsg = `Orchestration partial failure: ${failedAgents.length} agent(s) failed`;
+      log.warn({ taskId, failedCount: failedAgents.length }, errorMsg);
+      await updateTaskError(taskId, new Error(errorMsg));
+
+      // Still move to REVIEW if main stage succeeded
+      const mainStageResult = result.agents[0]; // First agent is always main
+      if (mainStageResult?.status === 'success') {
+        const registry = await readTaskRegistry();
+        const updatedTask = registry.tasks[taskId];
+        if (updatedTask) {
+          updatedTask.status = 'REVIEW';
+          updatedTask.updated_at = new Date().toISOString();
+          await writeTaskRegistry(registry);
+          await publishEventFn('task:review', { id: taskId, status: 'REVIEW' });
+          log.info({ taskId }, 'Main task succeeded despite review failures, moved to REVIEW');
+        }
+      }
+
+      updatePipelineAgent(taskId, 'completed');
+      setTimeout(() => removePipelineAgent(taskId), 60000);
+    }
+
+    await publishEventFn('pipeline:output', {
+      task_id: taskId,
+      event_type: allSuccess ? 'complete' : 'error',
+      output: allSuccess
+        ? `✅ 오케스트레이션 완료 — ${result.agents.length}개 에이전트 모두 성공`
+        : `⚠️ 오케스트레이션 부분 완료 — 일부 에이전트 실패`,
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (error) {
+    log.error({ taskId, error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error) }, 'Orchestration failed');
+    await updateTaskError(taskId, error);
+    // Transition task back to READY so user can retry
+    try {
+      const errRegistry = await readTaskRegistry();
+      const errTask = errRegistry.tasks[taskId];
+      if (errTask && errTask.status === 'IN_PROGRESS') {
+        errTask.status = 'READY';
+        errTask.updated_at = new Date().toISOString();
+        await writeTaskRegistry(errRegistry);
+        await publishEventFn('task:review', { id: taskId, status: 'READY' });
+      }
+    } catch (e) {
+      log.error({ taskId, error: e }, 'Failed to transition task back to READY');
+    }
+    updatePipelineAgent(taskId, 'error', error instanceof Error ? error.message : String(error));
+    await publishEventFn('agent.error', { agentId: `pipeline-${taskId}`, error: String(error) });
+    setTimeout(() => removePipelineAgent(taskId), 60000);
+  } finally {
+    // Process next task in queue (same as runClaudeCLI cleanup)
+    await processNextInQueue(projectId);
+  }
 }
 
 // Stream JSON event types
@@ -847,6 +1063,7 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
           const task = registry.tasks[taskId];
           if (task) {
             task.status = 'REVIEW';
+            task.last_error = null;
             // Save session_id for future resume
             if (newSessionId) {
               task.session_id = newSessionId;
@@ -920,14 +1137,8 @@ async function updateTaskError(taskId: string, error: unknown): Promise<void> {
     const task = registry.tasks[taskId];
     if (task) {
       task.updated_at = new Date().toISOString();
-      // Append error to feedback_history
-      task.feedback_history.push({
-        id: `ERR-${Date.now()}`,
-        content: `Pipeline Error: ${errorMessage}`,
-        created_at: new Date().toISOString(),
-        resolved: false,
-        resolved_at: null,
-      });
+      // Store error separately — not in feedback_history
+      task.last_error = `Pipeline Error: ${errorMessage}`;
       await writeTaskRegistry(registry);
     }
     await publishEventFn?.('pipeline:error', {
