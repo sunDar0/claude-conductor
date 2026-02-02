@@ -89,6 +89,7 @@ export async function handleTaskCreate(
     changelog_versions: [],
     feedback_history: [],
     session_id: null,
+    last_error: null,
   };
 
   registry.tasks[taskId] = task;
@@ -232,6 +233,45 @@ Branch: ${task.branch}
 Context: ${task.context_file}
 
 Starting work.`,
+    }],
+  };
+}
+
+export async function handleTaskDelete(
+  input: { task_id: string },
+  publish: EventPublisher
+) {
+  const registry = await readTaskRegistry();
+  const task = registry.tasks[input.task_id];
+  if (!task) {
+    return {
+      content: [{ type: 'text', text: `Task not found: ${input.task_id}` }],
+      isError: true,
+    };
+  }
+
+  // Only allow deletion of READY or BACKLOG tasks
+  if (task.status !== 'READY' && task.status !== 'BACKLOG') {
+    return {
+      content: [{
+        type: 'text',
+        text: `삭제 불가: ${input.task_id}는 ${task.status} 상태입니다. READY 또는 BACKLOG 상태만 삭제 가능합니다.`,
+      }],
+      isError: true,
+    };
+  }
+
+  delete registry.tasks[input.task_id];
+  await writeTaskRegistry(registry);
+  await publish('task.deleted', { task_id: input.task_id, title: task.title });
+  await publish('activity', createActivity('task.deleted', input.task_id, `Task deleted: ${task.title}`));
+
+  log.info({ taskId: input.task_id, title: task.title }, 'Task deleted');
+
+  return {
+    content: [{
+      type: 'text',
+      text: `🗑️ 태스크 삭제됨: ${input.task_id} (${task.title})`,
     }],
   };
 }

@@ -224,6 +224,24 @@ app.post('/api/tasks/:taskId/transition', async (req: Request, res: Response) =>
   }
 });
 
+// Delete a task (READY or BACKLOG only)
+app.delete('/api/tasks/:taskId', async (req: Request, res: Response) => {
+  try {
+    const { handleTaskDelete } = await import('./handlers/task.handler.js');
+    const result = await handleTaskDelete(
+      { task_id: req.params.taskId },
+      publishEvent
+    );
+    if (result.isError) {
+      res.status(400).json({ success: false, error: result.content[0].text });
+    } else {
+      res.json({ success: true, message: result.content[0].text });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
 // Manual pipeline trigger for existing READY tasks
 app.post('/api/tasks/:taskId/run', async (req: Request, res: Response) => {
   try {
