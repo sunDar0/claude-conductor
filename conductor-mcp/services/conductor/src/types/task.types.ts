@@ -27,6 +27,7 @@ export interface Task {
   changelog_versions: number[];
   feedback_history: Feedback[];
   session_id: string | null;
+  last_error: string | null;
 }
 
 // 프로젝트 관련 타입

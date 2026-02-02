@@ -104,6 +104,11 @@ export interface OrchestrationPlan {
   stages: OrchestrationStage[];
   created_at: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
+  task_context?: {
+    title: string;
+    description: string;
+    related_files?: string[];
+  };
 }
 
 export interface OrchestrationStage {
