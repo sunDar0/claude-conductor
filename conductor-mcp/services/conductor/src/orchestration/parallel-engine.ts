@@ -5,19 +5,27 @@ import type {
   AgentResult,
   CollectionResult,
   ConflictItem,
+  AgentInstance,
 } from '../types/agent.types.js';
 import { AgentManager } from './agent-manager.js';
+import { AgentExecutor } from './agent-executor.js';
 
 export class ParallelEngine extends EventEmitter {
   private manager: AgentManager;
+  private executor: AgentExecutor;
   private activePlans: Map<string, OrchestrationPlan> = new Map();
+  private currentWorkDir?: string;
+  private currentTaskContext: { title: string; description: string; related_files?: string[] } | null = null;
 
-  constructor(manager: AgentManager) {
+  constructor(manager: AgentManager, executor: AgentExecutor) {
     super();
     this.manager = manager;
+    this.executor = executor;
   }
 
-  async execute(plan: OrchestrationPlan): Promise<CollectionResult> {
+  async execute(plan: OrchestrationPlan, workDir?: string): Promise<CollectionResult> {
+    this.currentWorkDir = workDir;
+    this.currentTaskContext = plan.task_context || null;
     this.activePlans.set(plan.id, plan);
     plan.status = 'running';
 
@@ -48,6 +56,7 @@ export class ParallelEngine extends EventEmitter {
 
     } catch (error) {
       plan.status = 'failed';
+      console.error('[ParallelEngine] Plan execution failed:', error instanceof Error ? error.stack : error);
       this.emit('plan:failed', { planId: plan.id, error });
       throw error;
     } finally {
@@ -65,13 +74,26 @@ export class ParallelEngine extends EventEmitter {
       const instance = await this.manager.spawn(
         agentConfig.role,
         taskId,
-        { skills: agentConfig.skills }
+        {
+          skills: agentConfig.skills,
+          context: this.currentTaskContext ? {
+            task: {
+              id: taskId,
+              title: this.currentTaskContext.title,
+              description: this.currentTaskContext.description,
+              related_files: this.currentTaskContext.related_files || [],
+            },
+            skills: {},
+            shared: {},
+            parent_agent_id: null,
+          } : undefined,
+        }
       );
 
       await this.manager.startAgent(instance.id);
 
-      // Simulate agent execution (in real implementation, this would delegate to actual agent)
-      const result = await this.simulateAgentExecution(instance.id, stage.timeout_ms);
+      // Execute agent using Claude CLI
+      const result = await this.executeAgent(instance.id, stage.timeout_ms);
       return result;
     });
 
@@ -105,23 +127,29 @@ export class ParallelEngine extends EventEmitter {
     let previousResult: AgentResult | null = null;
 
     for (const agentConfig of stage.agents) {
+      const taskCtx = this.currentTaskContext || { title: '', description: '', related_files: [] };
       const instance = await this.manager.spawn(
         agentConfig.role,
         taskId,
         {
           skills: agentConfig.skills,
-          context: previousResult ? {
-            task: { id: taskId, title: '', description: '', related_files: [] },
+          context: {
+            task: {
+              id: taskId,
+              title: taskCtx.title,
+              description: taskCtx.description,
+              related_files: taskCtx.related_files || [],
+            },
             skills: {},
-            shared: { previous_result: previousResult },
+            shared: previousResult ? { previous_result: previousResult } : {},
             parent_agent_id: null,
-          } : undefined,
+          },
         }
       );
 
       await this.manager.startAgent(instance.id);
 
-      const result = await this.simulateAgentExecution(instance.id, stage.timeout_ms);
+      const result = await this.executeAgent(instance.id, stage.timeout_ms);
       results.push(result);
       previousResult = result;
 
@@ -134,36 +162,99 @@ export class ParallelEngine extends EventEmitter {
     return results;
   }
 
-  private async simulateAgentExecution(agentId: string, _timeoutMs: number): Promise<AgentResult> {
+  private async executeAgent(agentId: string, timeoutMs: number): Promise<AgentResult> {
     const instance = this.manager.getInstance(agentId);
     if (!instance) {
       throw new Error(`Agent not found: ${agentId}`);
     }
 
-    // Simulate work (in real implementation, this would be actual agent execution)
     const startTime = Date.now();
 
-    // Create a simulated result
-    const result: AgentResult = {
-      agent_id: agentId,
-      role: instance.role,
-      task_id: instance.task_id || '',
-      status: 'success',
-      output: {
-        message: `${instance.role} agent completed successfully`,
-        recommendations: [],
-      },
-      artifacts: [],
-      metrics: {
-        duration_ms: Date.now() - startTime,
-        tool_calls: 0,
-        tokens_used: 0,
-      },
-      timestamp: new Date().toISOString(),
-    };
+    try {
+      // Build prompt from agent context
+      const prompt = this.buildAgentPrompt(instance);
 
-    await this.manager.complete(agentId, result);
-    return result;
+      // Execute via Claude CLI
+      const result = await this.executor.execute(agentId, instance.role, prompt, {
+        timeoutMs,
+        workDir: this.currentWorkDir,
+      });
+
+      // Update result with correct task_id
+      result.task_id = instance.task_id || '';
+
+      // Update agent status in manager based on result
+      if (result.status === 'failed') {
+        const errorMsg = (result.output as Record<string, unknown>)?.error as string || 'Agent execution failed';
+        await this.manager.fail(agentId, errorMsg);
+      } else {
+        await this.manager.complete(agentId, result);
+      }
+      return result;
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      await this.manager.fail(agentId, errorMessage);
+
+      return {
+        agent_id: agentId,
+        role: instance.role,
+        task_id: instance.task_id || '',
+        status: 'failed',
+        output: { message: errorMessage, recommendations: [], tools_used: [] },
+        artifacts: [],
+        metrics: { duration_ms: Date.now() - startTime, tool_calls: 0, tokens_used: 0 },
+        timestamp: new Date().toISOString(),
+      };
+    }
+  }
+
+  private buildAgentPrompt(instance: AgentInstance): string {
+    const parts: string[] = [];
+
+    // Role header
+    parts.push(`# ${instance.role.toUpperCase()} Agent Execution`);
+
+    // Task context
+    if (instance.context.task.title || instance.context.task.description) {
+      parts.push(`\n## 태스크 정보`);
+      parts.push(`- **ID**: ${instance.context.task.id}`);
+      if (instance.context.task.title) parts.push(`- **제목**: ${instance.context.task.title}`);
+      if (instance.context.task.description) parts.push(`- **설명**: ${instance.context.task.description}`);
+      if (instance.context.task.related_files.length > 0) {
+        parts.push(`- **관련 파일**: ${instance.context.task.related_files.join(', ')}`);
+      }
+    }
+
+    // Loaded skills
+    if (Object.keys(instance.context.skills).length > 0) {
+      parts.push(`\n## 스킬 참조`);
+      for (const [name, content] of Object.entries(instance.context.skills)) {
+        parts.push(`\n### ${name}\n${content}`);
+      }
+    }
+
+    // Shared context from previous agents
+    if (Object.keys(instance.context.shared).length > 0) {
+      parts.push(`\n## 이전 에이전트 결과`);
+      const shared = instance.context.shared;
+      if (shared.previous_result) {
+        const prev = shared.previous_result as Record<string, unknown>;
+        if (prev.output) {
+          const output = prev.output as Record<string, unknown>;
+          parts.push(`\n이전 작업 결과:\n${output.message || JSON.stringify(output)}`);
+        }
+      }
+    }
+
+    // Instructions
+    parts.push(`\n## 지침`);
+    parts.push(`- 역할에 맞는 작업만 수행하세요`);
+    parts.push(`- 완료 후 변경 사항을 요약하세요`);
+    parts.push(`- **모든 출력은 한글로 작성**`);
+    parts.push(`\n지금 실행을 시작하세요.`);
+
+    return parts.join('\n');
   }
 
   private mergeResults(
