@@ -526,9 +526,9 @@ export async function createMCPServer(): Promise<Server> {
         case 'task_transition':
           return await handleTaskTransition(args as Parameters<typeof handleTaskTransition>[0], publishEvent);
         case 'server_start':
-          return await handleServerStart(args as Parameters<typeof handleServerStart>[0], publishEvent);
+          return await handleServerStart(args as unknown as Parameters<typeof handleServerStart>[0], publishEvent);
         case 'server_stop':
-          return await handleServerStop(args as Parameters<typeof handleServerStop>[0], publishEvent);
+          return await handleServerStop(args as unknown as Parameters<typeof handleServerStop>[0], publishEvent);
         case 'server_status':
           return await handleServerStatus();
 
@@ -546,9 +546,9 @@ export async function createMCPServer(): Promise<Server> {
 
         // Phase 3 Tools
         case 'review_code':
-          return await handleReviewCode(args as Parameters<typeof handleReviewCode>[0], publishEvent);
+          return await handleReviewCode(args as unknown as Parameters<typeof handleReviewCode>[0], publishEvent);
         case 'changelog_generate':
-          return await handleChangelogGenerate(args as Parameters<typeof handleChangelogGenerate>[0], publishEvent);
+          return await handleChangelogGenerate(args as unknown as Parameters<typeof handleChangelogGenerate>[0], publishEvent);
         case 'server_logs':
           return await handleServerLogs(args as Parameters<typeof handleServerLogs>[0]);
         case 'server_health':

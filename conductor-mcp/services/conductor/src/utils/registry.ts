@@ -4,11 +4,11 @@ import type { TaskRegistry, ServerRegistry, ProjectRegistry } from '../types/ind
 
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || '/workspace';
 
-export function getTaskRegistryPath(): string {
+function getTaskRegistryPath(): string {
   return path.join(WORKSPACE_DIR, '.claude', 'tasks', 'registry.json');
 }
 
-export function getServerRegistryPath(): string {
+function getServerRegistryPath(): string {
   return path.join(WORKSPACE_DIR, '.claude', 'servers', 'registry.json');
 }
 
@@ -55,7 +55,7 @@ export async function writeServerRegistry(registry: ServerRegistry): Promise<voi
 }
 
 // 프로젝트 레지스트리 함수
-export function getProjectRegistryPath(): string {
+function getProjectRegistryPath(): string {
   return path.join(WORKSPACE_DIR, '.claude', 'projects', 'registry.json');
 }
 

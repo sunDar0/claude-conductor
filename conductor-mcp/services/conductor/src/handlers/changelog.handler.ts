@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ChangelogInput, ChangelogEntry, ChangelogVersion, ChangeType } from '../types/index.js';
 import { readTaskRegistry, writeTaskRegistry, getTaskDirPath } from '../utils/registry.js';
-import { getCommits, getCommitsForProject, getChangesForProject, parseCommit } from '../utils/git.js';
+import { getCommitsForProject, getChangesForProject, parseCommit } from '../utils/git.js';
 import { nowISO, formatDateOnly } from '../utils/date.js';
 import { fileExists } from '../utils/file.js';
 import { resolveProjectDir } from '../utils/project-manager.js';
