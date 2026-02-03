@@ -31,11 +31,16 @@ interface AgentState {
   roles: AgentRoleDefinition[];
   loading: boolean;
   error: string | null;
+  agentSource: string;
+  availableSources: string[];
+  hasOmc: boolean;
 
   fetchAgents: () => Promise<void>;
   fetchRoles: () => Promise<void>;
   updateAgent: (agent: AgentInstance) => void;
   removeAgent: (agentId: string) => void;
+  fetchSources: () => Promise<void>;
+  setAgentSource: (source: string) => Promise<void>;
 }
 
 export const useAgentStore = create<AgentState>((set) => ({
@@ -43,6 +48,9 @@ export const useAgentStore = create<AgentState>((set) => ({
   roles: [],
   loading: false,
   error: null,
+  agentSource: 'default',
+  availableSources: ['default'],
+  hasOmc: false,
 
   fetchAgents: async () => {
     set({ loading: true });
@@ -82,5 +90,34 @@ export const useAgentStore = create<AgentState>((set) => ({
       const { [agentId]: _, ...rest } = state.agents;
       return { agents: rest };
     });
+  },
+
+  fetchSources: async () => {
+    try {
+      const response = await api.get<{ success: boolean; sources: string[]; current: string; hasOmc: boolean }>('/agent-sources');
+      if (response.sources) {
+        set({
+          availableSources: response.sources,
+          agentSource: response.current,
+          hasOmc: response.hasOmc,
+        });
+      }
+    } catch {
+      // Silently fail
+    }
+  },
+
+  setAgentSource: async (source: string) => {
+    try {
+      const response = await api.post<{ success: boolean; source: string; roles: AgentRoleDefinition[] }>('/agent-sources/select', { source });
+      if (response.roles) {
+        set({
+          agentSource: source,
+          roles: response.roles,
+        });
+      }
+    } catch {
+      // Silently fail
+    }
   },
 }));

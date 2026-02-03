@@ -11,6 +11,8 @@ import {
 } from './utils/project-manager.js';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { AgentRegistry } from './orchestration/agent-registry.js';
+import type { AgentSourceType } from './types/agent.types.js';
 import {
   handleTaskCreate,
   handleTaskGet,
@@ -18,7 +20,7 @@ import {
   handleTaskTransition,
 } from './handlers/task.handler.js';
 import { handleServerStart, handleServerStop } from './handlers/server.handler.js';
-import { publishEvent } from './server.js';
+import { publishEvent, getAgentRegistry, reinitAgentRoles } from './server.js';
 
 const app: Application = express();
 app.use(express.json());
@@ -324,6 +326,7 @@ let agentCache: unknown[] = [];
 let agentRolesCache: unknown[] = [];
 // Workers (CLI processes executing tasks)
 const pipelineAgents: Map<string, unknown> = new Map();
+let currentAgentSource: AgentSourceType = 'default';
 
 export function updateAgentCache(agents: unknown[]): void {
   agentCache = agents;
@@ -381,6 +384,77 @@ app.get('/api/agents', (_req: Request, res: Response) => {
 
 app.get('/api/agents/roles', (_req: Request, res: Response) => {
   res.json({ success: true, roles: agentRolesCache });
+});
+
+// Agent source management
+app.post('/api/agent-sources/select', async (req: Request, res: Response) => {
+  try {
+    const { source } = req.body as { source: AgentSourceType };
+    if (!source) {
+      res.status(400).json({ success: false, error: 'source is required' });
+      return;
+    }
+
+    const registry = getAgentRegistry();
+    if (!registry) {
+      res.status(500).json({ success: false, error: 'Agent registry not initialized' });
+      return;
+    }
+
+    await registry.initialize(source);
+    currentAgentSource = source;
+    await reinitAgentRoles();
+
+    const roles = registry.getAllDefinitions().map(def => ({
+      role: def.role,
+      name: def.name,
+      description: def.description,
+      skills: def.skills,
+    }));
+
+    log.info({ source, roleCount: roles.length }, 'Agent source changed');
+    res.json({ success: true, source, roles, roleMapping: registry.getRoleMappings() });
+  } catch (err) {
+    log.error({ err }, 'Failed to select agent source');
+    res.status(500).json({ success: false, error: 'Failed to select agent source' });
+  }
+});
+
+app.get('/api/agent-sources', async (_req: Request, res: Response) => {
+  try {
+    const registry = getAgentRegistry();
+    const projectDir = undefined; // TODO: get current project path
+    const { sources, hasOmc } = await AgentRegistry.detectAvailableSources(projectDir);
+    res.json({
+      success: true,
+      sources,
+      current: currentAgentSource,
+      hasOmc,
+      roleMapping: registry?.getRoleMappings() ?? {},
+    });
+  } catch (err) {
+    log.error({ err }, 'Failed to detect agent sources');
+    res.status(500).json({ success: false, error: 'Failed to detect agent sources' });
+  }
+});
+
+app.get('/api/agent-sources/:source/roles', async (req: Request, res: Response) => {
+  try {
+    const source = req.params.source as AgentSourceType;
+    // Create a temporary registry to load roles for preview
+    const tempRegistry = new AgentRegistry();
+    await tempRegistry.initialize(source);
+    const roles = tempRegistry.getAllDefinitions().map(def => ({
+      role: def.role,
+      name: def.name,
+      description: def.description,
+      skills: def.skills,
+    }));
+    res.json({ success: true, roles, source });
+  } catch (err) {
+    log.error({ err }, 'Failed to fetch roles for source');
+    res.status(500).json({ success: false, error: 'Failed to fetch roles' });
+  }
 });
 
 // Filesystem browser API for directory selection

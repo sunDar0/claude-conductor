@@ -50,6 +50,7 @@ import { v4 as uuid } from 'uuid';
 let redis: Redis | null = null;
 let agentManager: AgentManager | null = null;
 let parallelEngine: ParallelEngine | null = null;
+let agentRegistry: AgentRegistry | null = null;
 
 async function initRedis(): Promise<void> {
   const redisUrl = process.env.REDIS_URL;
@@ -73,9 +74,10 @@ async function initOrchestration(): Promise<void> {
   const workspaceDir = process.env.WORKSPACE_DIR || '/workspace';
 
   try {
-    // AgentRegistry and SkillLoader read from ~/.claude/ (global Claude config)
-    const registry = new AgentRegistry(homeDir);
-    await registry.initialize();
+    // AgentRegistry: global (~/.claude/agents/) + project agents if available
+    agentRegistry = new AgentRegistry();
+    await agentRegistry.initialize();
+    const registry = agentRegistry;
 
     const skillLoader = new SkillLoader(homeDir);
 
@@ -84,6 +86,7 @@ async function initOrchestration(): Promise<void> {
 
     const agentExecutor = new AgentExecutor();
     parallelEngine = new ParallelEngine(agentManager, agentExecutor);
+    parallelEngine.setEventPublisher(publishEvent);
 
     // Sync agent state to HTTP API cache
     const syncAgentCache = () => {
@@ -115,6 +118,22 @@ export async function publishEvent(event: string, data: unknown): Promise<void> 
       data,
       timestamp: new Date().toISOString(),
     }));
+  }
+}
+
+export function getAgentRegistry(): AgentRegistry | null {
+  return agentRegistry;
+}
+
+export async function reinitAgentRoles(): Promise<void> {
+  if (agentRegistry) {
+    const roles = agentRegistry.getAllDefinitions().map(def => ({
+      role: def.role,
+      name: def.name,
+      description: def.description,
+      skills: def.skills,
+    }));
+    updateAgentRolesCache(roles);
   }
 }
 

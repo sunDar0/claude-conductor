@@ -3,6 +3,7 @@ import { Sun, Moon, Monitor, Wifi, WifiOff, FolderOpen, ChevronDown, Check, Plus
 import { Button } from '../common/Button';
 import { AddProjectModal } from '../project/AddProjectModal';
 import { FileBrowserModal } from '../project/FileBrowserModal';
+import { AgentSourceSelector } from '../agent/AgentSourceSelector';
 import { useUIStore } from '../../store/uiStore';
 import { useProjectStore, type Project } from '../../store/projectStore';
 import { useTaskStore } from '../../store/taskStore';
@@ -190,6 +191,7 @@ export function Header() {
         </div>
 
         <div className="flex items-center gap-3">
+          <AgentSourceSelector />
           <div
             className={cn(
               'flex items-center gap-1.5 text-sm',
