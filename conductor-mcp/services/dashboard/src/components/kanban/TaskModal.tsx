@@ -1,5 +1,5 @@
-import { AlertCircle, Calendar, Check, Clock, FileText, GitBranch, Play, RotateCcw, X, ChevronDown, ChevronUp, Terminal, GitCommit, StopCircle, Maximize2, Minimize2, Trash2 } from 'lucide-react';
-import React, { useState, useEffect, useRef } from 'react';
+import { AlertCircle, Calendar, Check, ChevronDown, ChevronUp, Clock, FileText, GitBranch, GitCommit, Maximize2, Minimize2, Play, RotateCcw, StopCircle, Terminal, Trash2, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../../lib/api';
@@ -729,7 +729,7 @@ export function TaskModal() {
                 disabled={loading}
               >
                 <Check className="w-4 h-4 mr-1" />
-                승인 (DONE)
+                완료 (DONE)
               </Button>
               <Button
                 variant="secondary"
