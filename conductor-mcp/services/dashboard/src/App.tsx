@@ -3,7 +3,6 @@ import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { KanbanBoard } from './components/kanban/KanbanBoard';
 import { TaskModal } from './components/kanban/TaskModal';
-import { ServerPanel } from './components/server/ServerPanel';
 import { ActivityFeed } from './components/activity/ActivityFeed';
 import { AgentPanel } from './components/agent/AgentPanel';
 import { ToastContainer } from './components/common/ToastContainer';
@@ -12,7 +11,7 @@ import { useTaskStore } from './store/taskStore';
 import { useServerStore } from './store/serverStore';
 import { useProjectStore } from './store/projectStore';
 
-type View = 'kanban' | 'servers' | 'agents' | 'activity';
+type View = 'kanban' | 'agents' | 'activity';
 
 export default function App() {
   const [view, setView] = useState<View>('kanban');
@@ -40,7 +39,6 @@ export default function App() {
         <Sidebar currentView={view} onViewChange={setView} />
         <main className="flex-1 overflow-hidden p-4">
           {view === 'kanban' && <KanbanBoard />}
-          {view === 'servers' && <ServerPanel />}
           {view === 'agents' && <AgentPanel />}
           {view === 'activity' && <ActivityFeed />}
         </main>

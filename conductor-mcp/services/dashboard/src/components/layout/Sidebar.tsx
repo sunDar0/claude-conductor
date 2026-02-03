@@ -1,7 +1,7 @@
-import { Activity, Cpu, LayoutGrid, Server, Settings } from 'lucide-react';
+import { Activity, Cpu, LayoutGrid, Settings } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
-type View = 'kanban' | 'servers' | 'agents' | 'activity';
+type View = 'kanban' | 'agents' | 'activity';
 
 interface Props {
   currentView: View;
@@ -10,7 +10,6 @@ interface Props {
 
 const NAV_ITEMS = [
   { id: 'kanban' as View, label: 'Kanban Board', icon: LayoutGrid },
-  { id: 'servers' as View, label: 'Servers', icon: Server },
   { id: 'agents' as View, label: 'Workers', icon: Cpu },
   { id: 'activity' as View, label: 'Activity', icon: Activity },
 ];
