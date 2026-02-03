@@ -9,6 +9,7 @@ import { autoPipelineLogger as log } from '../utils/logger.js';
 import * as fs from 'fs/promises';
 import { nowISO } from '../utils/date.js';
 import { addPipelineAgent, updatePipelineAgent, removePipelineAgent } from '../http-server.js';
+import { getAgentRegistry } from '../server.js';
 import { runCodeReview, runSecurityReview } from './review.handler.js';
 import { ParallelEngine } from '../orchestration/parallel-engine.js';
 import { AgentExecutor } from '../orchestration/agent-executor.js';
@@ -36,6 +37,16 @@ async function captureBaseCommit(workDir: string): Promise<string | null> {
   } catch (error) {
     log.warn({ workDir, error }, 'Failed to capture base commit');
     return null;
+  }
+}
+
+// Save base_commit to task registry
+async function saveBaseCommit(taskId: string, baseCommit: string | null): Promise<void> {
+  if (!baseCommit) return;
+  const reg = await readTaskRegistry();
+  if (reg.tasks[taskId]) {
+    reg.tasks[taskId].base_commit = baseCommit;
+    await writeTaskRegistry(reg);
   }
 }
 
@@ -121,6 +132,13 @@ const activePipelines: Map<string, ChildProcess> = new Map();
 const cancelledPipelines: Set<string> = new Set();
 let parallelEngine: ParallelEngine | null = null;
 let agentManager: AgentManager | null = null;
+
+// Determine if a task should use orchestrated (multi-agent) execution
+function shouldUseOrchestration(task: Task): boolean {
+  const hasUnresolvedFeedback = task.feedback_history.some(fb => !fb.resolved);
+  const isResume = !!task.session_id;
+  return !!parallelEngine && !isResume && !hasUnresolvedFeedback;
+}
 
 // Project-based queue: one task at a time per project
 const projectQueues: Map<string, string[]> = new Map(); // projectId -> taskId[]
@@ -283,7 +301,7 @@ export async function runAutoPipeline(taskId: string): Promise<void> {
     }
 
     // Choose execution path: orchestrated vs direct CLI
-    const useOrchestration = parallelEngine && !isResume && unresolvedFeedback.length === 0;
+    const useOrchestration = shouldUseOrchestration(task);
 
     if (useOrchestration) {
       // Orchestrated execution: multi-agent pipeline
@@ -458,6 +476,12 @@ function detectTaskType(task: Task): string {
   if (text.includes('security') || text.includes('보안')) {
     return 'security';
   }
+  if (text.includes('backend') || text.includes('api') || text.includes('서버') || text.includes('endpoint')) {
+    return 'backend';
+  }
+  if (text.includes('infra') || text.includes('deploy') || text.includes('ci/cd') || text.includes('docker') || text.includes('배포') || text.includes('인프라')) {
+    return 'infra';
+  }
   if (text.includes('refactor') || text.includes('리팩토링') || text.includes('개선')) {
     return 'refactoring';
   }
@@ -472,12 +496,16 @@ function buildOrchestrationPlan(taskId: string, task: Task): OrchestrationPlan {
   const taskType = detectTaskType(task);
   const stages: OrchestrationStage[] = [];
 
+  // Get role mapping function
+  const registry = getAgentRegistry();
+  const mapRole = (role: string): AgentRole => registry?.mapRole(role) ?? role;
+
   // Stage 1: Main execution (always sequential - one agent does the work)
-  const mainRole: AgentRole = taskType === 'review' ? 'review'
-    : taskType === 'testing' ? 'test'
-    : taskType === 'documentation' ? 'docs'
-    : taskType === 'security' ? 'security'
-    : 'code';
+  const mainRole: AgentRole = taskType === 'review' ? mapRole('review')
+    : taskType === 'testing' ? mapRole('test')
+    : taskType === 'documentation' ? mapRole('docs')
+    : taskType === 'security' ? mapRole('security')
+    : mapRole('code');
 
   stages.push({
     stage_id: `stage-main-${randomUUID().slice(0, 8)}`,
@@ -490,13 +518,36 @@ function buildOrchestrationPlan(taskId: string, task: Task): OrchestrationPlan {
     timeout_ms: 30 * 60 * 1000, // 30 minutes
   });
 
-  // Stage 2: Review is handled directly via runCodeReview/runSecurityReview
-  // after orchestration completes (not via agent spawn) for reliable baseCommit-based diff
+  // Stage 2: Review (parallel - code review + security review)
+  // baseCommit은 initial_shared로 전달되어 review/security agent가 git diff로 리뷰
+  if (['implementation', 'bugfix', 'refactoring', 'frontend', 'backend', 'infra'].includes(taskType)) {
+    stages.push({
+      stage_id: `stage-review-${randomUUID().slice(0, 8)}`,
+      name: '검증 (리뷰 & 보안 & 테스트)',
+      agents: [
+        { role: mapRole('review'), skills: [] },
+        { role: mapRole('security'), skills: [] },
+        { role: mapRole('test'), skills: [] },
+      ],
+      parallel: true,
+      timeout_ms: 10 * 60 * 1000, // 10 minutes
+    });
+  } else if (taskType === 'documentation') {
+    stages.push({
+      stage_id: `stage-review-${randomUUID().slice(0, 8)}`,
+      name: '문서 리뷰',
+      agents: [
+        { role: mapRole('review'), skills: [] },
+      ],
+      parallel: false,
+      timeout_ms: 10 * 60 * 1000,
+    });
+  }
 
   return {
     id: `plan-${taskId}-${randomUUID().slice(0, 8)}`,
     task_id: taskId,
-    strategy: 'sequential',
+    strategy: stages.length > 1 ? 'pipeline' : 'sequential',
     stages,
     created_at: new Date().toISOString(),
     status: 'pending',
@@ -539,9 +590,13 @@ async function runOrchestrated(taskId: string, workDir: string, task: Task, proj
     }
   }
 
-  // Capture base commit before execution for review diff
+  // Capture base commit before execution — passed via initial_shared to review/security agents
   const baseCommit = await captureBaseCommit(workDir);
   log.info({ taskId, baseCommit }, 'Captured base commit before orchestration');
+  plan.initial_shared = { baseCommit: baseCommit || '' };
+
+  // Save base_commit to task for changelog generation
+  await saveBaseCommit(taskId, baseCommit);
 
   try {
     // Execute the orchestration plan
@@ -570,52 +625,12 @@ async function runOrchestrated(taskId: string, workDir: string, task: Task, proj
       }
     }
 
-    // Run code review & security review using baseCommit-based diff (same as direct CLI path)
-    let reviewSection = '';
-    const taskType = detectTaskType(task);
-    if (['implementation', 'bugfix', 'refactoring', 'frontend'].includes(taskType)) {
-      try {
-        await publishEventFn('pipeline:output', {
-          task_id: taskId,
-          event_type: 'info',
-          output: `🔍 AI 코드 리뷰 & 보안 점검 실행 중...`,
-          timestamp: new Date().toISOString(),
-        });
-
-        const [reviewResult, securityResult] = await Promise.all([
-          runCodeReview(taskId, workDir, baseCommit || undefined),
-          runSecurityReview(taskId, workDir, baseCommit || undefined),
-        ]);
-
-        log.info({ taskId, reviewHasCritical: reviewResult.hasCritical, securityHasCritical: securityResult.hasCritical }, 'AI review & security check completed');
-
-        if (reviewResult.reviewMarkdown) {
-          reviewSection += `\n\n${reviewResult.reviewMarkdown}`;
-        }
-        if (securityResult.securityMarkdown) {
-          reviewSection += `\n\n${securityResult.securityMarkdown}`;
-        }
-
-        const hasCritical = reviewResult.hasCritical || securityResult.hasCritical;
-        await publishEventFn('pipeline:output', {
-          task_id: taskId,
-          event_type: hasCritical ? 'error' : 'complete',
-          output: hasCritical
-            ? `⚠️ AI 리뷰 완료 - 치명적 이슈 발견`
-            : `✅ AI 코드 리뷰 & 보안 점검 완료`,
-          timestamp: new Date().toISOString(),
-        });
-      } catch (reviewError) {
-        log.warn({ taskId, error: reviewError }, 'AI review failed (non-blocking)');
-      }
-    }
-
     // Save to context file
     const contextPath = getTaskContextPath(taskId);
     let existingContext = '';
     try { existingContext = await fs.readFile(contextPath, 'utf-8'); } catch { /* first run */ }
     const runLabel = `## Orchestrated Pipeline Output (${new Date().toISOString()})`;
-    const updatedContext = `${existingContext}\n\n${runLabel}\n\n${readableOutput}${reviewSection}`;
+    const updatedContext = `${existingContext}\n\n${runLabel}\n\n${readableOutput}`;
     await fs.writeFile(contextPath, updatedContext, 'utf-8');
 
     // Check if any agent failed
@@ -905,6 +920,9 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
   // 작업 전 Git 상태 캡처
   const baseCommit = await captureBaseCommit(workDir);
   log.info({ taskId, workDir, baseCommit }, 'Captured base commit before execution');
+
+  // Save base_commit to task for changelog generation
+  await saveBaseCommit(taskId, baseCommit);
 
   return new Promise((resolve, reject) => {
     log.info({ taskId, workDir }, 'Spawning Claude CLI');
@@ -1213,12 +1231,12 @@ export async function triggerPipeline(taskId: string): Promise<{ success: boolea
       // Publish activity event for dashboard
       await publishEventFn?.('activity', createActivity('task.started', taskId, `AI started working on: ${task.title}`));
       // Add virtual pipeline agent only for direct CLI path (orchestration manages its own agents)
-      const willUseOrchestration = parallelEngine && !task.session_id && task.feedback_history.filter(fb => !fb.resolved).length === 0;
-      if (!willUseOrchestration) {
+      const isOrchestrated = shouldUseOrchestration(task);
+      if (!isOrchestrated) {
         addPipelineAgent(taskId, task.title);
         await publishEventFn?.('agent.spawned', { agentId: `pipeline-${taskId}`, role: 'code', taskId });
       }
-      log.info({ taskId, orchestrated: !!willUseOrchestration }, 'Task → IN_PROGRESS (manual trigger)');
+      log.info({ taskId, orchestrated: isOrchestrated }, 'Task → IN_PROGRESS (manual trigger)');
     }
 
     await runAutoPipeline(taskId);
