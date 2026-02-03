@@ -35,6 +35,7 @@ export interface ExecuteOptions {
   timeoutMs?: number;
   sessionId?: string | null;
   workDir?: string;
+  onProgress?: ProgressCallback;
 }
 
 /**
@@ -144,9 +145,10 @@ export class AgentExecutor {
               apiDuration = parsed.duration_ms || 0;
             }
 
-            // Call progress callback
-            if (this.onProgress) {
-              this.onProgress({
+            // Call progress callback (per-call or instance-level)
+            const progressFn = options.onProgress || this.onProgress;
+            if (progressFn) {
+              progressFn({
                 type: parsed.type,
                 content: parsed.content,
               });
@@ -177,8 +179,9 @@ export class AgentExecutor {
         if (lineBuffer.trim()) {
           output += lineBuffer + '\n';
           const parsed = this.parseStreamEvent(lineBuffer);
-          if (parsed && this.onProgress) {
-            this.onProgress({
+          const progressFn = options.onProgress || this.onProgress;
+          if (parsed && progressFn) {
+            progressFn({
               type: parsed.type,
               content: parsed.content,
             });
