@@ -28,6 +28,7 @@ export interface Task {
   feedback_history: Feedback[];
   session_id: string | null;
   last_error: string | null;
+  base_commit: string | null;
 }
 
 // 프로젝트 관련 타입

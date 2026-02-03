@@ -5,6 +5,7 @@ import { readTaskRegistry, writeTaskRegistry, getTaskContextPath, getTaskDirPath
 import { nowISO, formatKorean, formatDateOnly, calculateDuration } from '../utils/date.js';
 import { ensureDir } from '../utils/file.js';
 import { taskHandlerLogger as log } from '../utils/logger.js';
+import { handleChangelogGenerate } from './changelog.handler.js';
 
 export type EventPublisher = (event: string, data: unknown) => Promise<void>;
 
@@ -23,7 +24,45 @@ function generateTaskId(counter: number): string {
   return `TASK-${String(counter).padStart(3, '0')}`;
 }
 
+function extractRequirements(description: string): string[] {
+  const requirements: string[] = [];
+  const lines = description.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Match bullet points, numbered lists, checkbox items
+    const match = trimmed.match(/^(?:[-*•]|\d+[.)]\s*|\[[ x]\])\s*(.+)/i);
+    if (match) {
+      requirements.push(match[1].trim());
+    }
+  }
+
+  // If no list items found, split by sentences that look like requirements
+  if (requirements.length === 0 && description.trim().length > 0) {
+    // Split by Korean/English sentence endings
+    const sentences = description
+      .split(/[.。]\s*|\n/)
+      .map(s => s.trim())
+      .filter(s => s.length > 5 && s.length < 200);
+
+    if (sentences.length > 1) {
+      for (const s of sentences) {
+        requirements.push(s);
+      }
+    } else if (sentences.length === 1) {
+      requirements.push(sentences[0]);
+    }
+  }
+
+  return requirements;
+}
+
 function createContextTemplate(task: Task): string {
+  const requirements = extractRequirements(task.description || '');
+  const requirementsList = requirements.length > 0
+    ? requirements.map(r => `- [ ] ${r}`).join('\n')
+    : '(No requirements specified)';
+
   return `# ${task.id}: ${task.title}
 
 ## Goal
@@ -32,7 +71,7 @@ ${task.description || 'Please describe the goal.'}
 
 ## Requirements
 
-- [ ] Requirement 1
+${requirementsList}
 
 ## Progress Notes
 
@@ -90,6 +129,7 @@ export async function handleTaskCreate(
     feedback_history: [],
     session_id: null,
     last_error: null,
+    base_commit: null,
   };
 
   registry.tasks[taskId] = task;
@@ -347,6 +387,21 @@ Allowed: ${VALID_TRANSITIONS[task.status].join(', ') || 'none'}`,
     ? `Task ${task.id}: ${prevStatus} → ${input.target_state} (feedback: ${input.feedback.substring(0, 50)}...)`
     : `Task ${task.id}: ${prevStatus} → ${input.target_state}`;
   await publish('activity', createActivity('task.transitioned', task.id, message));
+
+  // REVIEW → DONE 전환 시 CHANGELOG 자동 생성
+  if (prevStatus === 'REVIEW' && input.target_state === 'DONE') {
+    try {
+      const changelogResult = await handleChangelogGenerate(
+        { task_id: task.id, from_ref: task.base_commit || undefined },
+        publish,
+      );
+      if (!changelogResult.isError) {
+        log.info({ taskId: task.id }, 'CHANGELOG generated on DONE transition');
+      }
+    } catch (err) {
+      log.warn({ taskId: task.id, error: err }, 'CHANGELOG generation failed (non-blocking)');
+    }
+  }
 
   return {
     content: [{

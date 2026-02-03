@@ -2,9 +2,10 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ChangelogInput, ChangelogEntry, ChangelogVersion, ChangeType } from '../types/index.js';
 import { readTaskRegistry, writeTaskRegistry, getTaskDirPath } from '../utils/registry.js';
-import { getCommits, parseCommit } from '../utils/git.js';
+import { getCommits, getCommitsForProject, getChangesForProject, parseCommit } from '../utils/git.js';
 import { nowISO, formatDateOnly } from '../utils/date.js';
 import { fileExists } from '../utils/file.js';
+import { resolveProjectDir } from '../utils/project-manager.js';
 
 const WORKSPACE = process.env.WORKSPACE_DIR || '/workspace';
 const CHANGELOG_FILE = path.join(WORKSPACE, 'CHANGELOG.md');
@@ -42,39 +43,71 @@ export async function handleChangelogGenerate(
     };
   }
 
+  // Determine project directory for git operations and changelog
+  const projectDir = await resolveProjectDir(task);
+  const changelogFile = path.join(projectDir, 'CHANGELOG.md');
+
   try {
-    const commits = await getCommits(input.from_ref, input.to_ref);
-
-    if (commits.length === 0) {
-      return {
-        content: [{ type: 'text', text: 'No commits to analyze.' }],
-      };
-    }
-
-    // 커밋 분석
+    const commits = await getCommitsForProject(projectDir, input.from_ref, input.to_ref);
     const entries: ChangelogEntry[] = [];
 
-    for (const commit of commits) {
-      const parsed = parseCommit(commit.message);
+    if (commits.length > 0) {
+      // 커밋 기반 분석
+      for (const commit of commits) {
+        const parsed = parseCommit(commit.message);
 
-      if (parsed) {
-        const changeType = COMMIT_TO_CHANGELOG[parsed.type] || 'Changed';
+        if (parsed) {
+          const changeType = COMMIT_TO_CHANGELOG[parsed.type] || 'Changed';
+          entries.push({
+            type: changeType,
+            description: parsed.description,
+            scope: parsed.scope,
+            breaking: parsed.breaking,
+          });
+        } else {
+          entries.push({
+            type: 'Changed',
+            description: commit.message.split('\n')[0],
+          });
+        }
+      }
+    } else {
+      // 커밋이 없으면 uncommitted 변경사항(git diff) 기반으로 생성
+      const changes = await getChangesForProject(projectDir, input.from_ref);
+
+      if (changes.length === 0) {
+        return {
+          content: [{ type: 'text', text: 'No changes to analyze.' }],
+        };
+      }
+
+      // 변경된 파일 기준으로 엔트리 생성
+      const added = changes.filter(c => c.status === 'added');
+      const modified = changes.filter(c => c.status === 'modified');
+      const deleted = changes.filter(c => c.status === 'deleted');
+
+      if (added.length > 0) {
         entries.push({
-          type: changeType,
-          description: parsed.description,
-          scope: parsed.scope,
-          breaking: parsed.breaking,
+          type: 'Added',
+          description: added.map(f => f.path).join(', '),
         });
-      } else {
+      }
+      if (modified.length > 0) {
         entries.push({
           type: 'Changed',
-          description: commit.message.split('\n')[0],
+          description: modified.map(f => f.path).join(', '),
+        });
+      }
+      if (deleted.length > 0) {
+        entries.push({
+          type: 'Removed',
+          description: deleted.map(f => f.path).join(', '),
         });
       }
     }
 
     // 버전 결정
-    const version = input.version || await nextVersion(entries);
+    const version = input.version || await nextVersion(entries, changelogFile);
     const today = formatDateOnly(nowISO());
 
     const changelogVersion: ChangelogVersion = {
@@ -85,7 +118,7 @@ export async function handleChangelogGenerate(
     };
 
     // 파일 업데이트
-    await updateChangelogFile(changelogVersion);
+    await updateChangelogFile(changelogVersion, changelogFile);
 
     // 태스크별 changelog 저장
     const taskDir = getTaskDirPath(task.id);
@@ -123,11 +156,11 @@ export async function handleChangelogGenerate(
 /**
  * 다음 버전 결정
  */
-async function nextVersion(entries: ChangelogEntry[]): Promise<string> {
+async function nextVersion(entries: ChangelogEntry[], changelogFile: string = CHANGELOG_FILE): Promise<string> {
   let major = 0, minor = 0, patch = 1;
 
-  if (await fileExists(CHANGELOG_FILE)) {
-    const content = await fs.readFile(CHANGELOG_FILE, 'utf-8');
+  if (await fileExists(changelogFile)) {
+    const content = await fs.readFile(changelogFile, 'utf-8');
     const match = content.match(/## \[(\d+)\.(\d+)\.(\d+)\]/);
     if (match) {
       major = parseInt(match[1], 10);
@@ -151,7 +184,7 @@ async function nextVersion(entries: ChangelogEntry[]): Promise<string> {
 /**
  * CHANGELOG.md 파일 업데이트
  */
-async function updateChangelogFile(version: ChangelogVersion): Promise<void> {
+async function updateChangelogFile(version: ChangelogVersion, changelogFile: string = CHANGELOG_FILE): Promise<void> {
   const header = `# Changelog
 
 All notable changes to this project will be documented in this file.
@@ -164,8 +197,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
   let content: string;
 
-  if (await fileExists(CHANGELOG_FILE)) {
-    const existing = await fs.readFile(CHANGELOG_FILE, 'utf-8');
+  if (await fileExists(changelogFile)) {
+    const existing = await fs.readFile(changelogFile, 'utf-8');
     const insertPoint = existing.indexOf('\n## ');
     if (insertPoint === -1) {
       content = existing.trimEnd() + '\n\n' + versionSection;
@@ -176,7 +209,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     content = header + versionSection;
   }
 
-  await fs.writeFile(CHANGELOG_FILE, content, 'utf-8');
+  await fs.writeFile(changelogFile, content, 'utf-8');
 }
 
 /**
@@ -225,18 +258,18 @@ function parseVersionNum(v: string): number {
 function formatChangelogResponse(v: ChangelogVersion, commitCount: number): string {
   const grouped = groupByType(v.entries);
 
-  let output = `## CHANGELOG Generated
+  let output = `## 변경 이력 생성 완료
 
-### Version Info
-| Field | Value |
-|-------|-------|
-| Version | ${v.version} |
-| Date | ${v.date} |
-| Task | ${v.task_id} |
-| Commits | ${commitCount} |
-| Entries | ${v.entries.length} |
+### 버전 정보
+| 항목 | 값 |
+|------|-----|
+| 버전 | ${v.version} |
+| 날짜 | ${v.date} |
+| 태스크 | ${v.task_id} |
+| 커밋 수 | ${commitCount} |
+| 항목 수 | ${v.entries.length} |
 
-### Changes
+### 변경 내역
 `;
 
   const order: ChangeType[] = ['Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security'];
@@ -253,9 +286,9 @@ function formatChangelogResponse(v: ChangelogVersion, commitCount: number): stri
     }
   }
 
-  output += `\n### Saved To
-- Project: \`CHANGELOG.md\`
-- Task: \`.claude/tasks/${v.task_id}/CHANGELOG.md\``;
+  output += `\n### 저장 위치
+- 프로젝트: \`CHANGELOG.md\`
+- 태스크: \`.claude/tasks/${v.task_id}/CHANGELOG.md\``;
 
   return output;
 }

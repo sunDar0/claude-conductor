@@ -110,3 +110,28 @@ export async function getProjectById(projectId: string): Promise<Project | null>
   const projects = await getProjects();
   return projects.find(p => p.id === projectId) || null;
 }
+
+/**
+ * Resolve project directory from task
+ * Priority: task.project_path > getProjectById(task.project_id) > WORKSPACE
+ */
+export async function resolveProjectDir(task: { project_path?: string; project_id?: string }): Promise<string> {
+  const WORKSPACE = process.env.WORKSPACE_DIR || '/workspace';
+
+  if (task.project_path) {
+    return task.project_path;
+  }
+
+  if (task.project_id && task.project_id !== 'default') {
+    try {
+      const project = await getProjectById(task.project_id);
+      if (project) {
+        return project.path;
+      }
+    } catch {
+      // fallback to WORKSPACE
+    }
+  }
+
+  return WORKSPACE;
+}
