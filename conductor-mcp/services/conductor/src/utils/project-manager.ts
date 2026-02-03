@@ -11,22 +11,6 @@ export interface Project {
 
 const PROJECTS_KEY = 'conductor:projects';
 
-// Running locally - no path conversion needed
-// Path conversion was only needed for Docker environment
-
-/**
- * Convert host path to container path (no-op in local mode)
- */
-export function toContainerPath(hostPath: string): string {
-  return hostPath;
-}
-
-/**
- * Convert container path to host path (no-op in local mode)
- */
-export function toHostPath(containerPath: string): string {
-  return containerPath;
-}
 
 let redis: Redis | null = null;
 
@@ -61,7 +45,7 @@ export async function addProject(project: Omit<Project, 'id' | 'created_at' | 'c
     id: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     name: project.name,
     path: project.path,
-    containerPath: toContainerPath(project.path),
+    containerPath: project.path,
     description: project.description,
     created_at: new Date().toISOString(),
   };
@@ -97,7 +81,7 @@ export async function updateProject(projectId: string, updates: Partial<Omit<Pro
   };
 
   if (updates.path) {
-    updatedProject.containerPath = toContainerPath(updates.path);
+    updatedProject.containerPath = updates.path;
   }
 
   projects[index] = updatedProject;

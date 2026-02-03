@@ -7,7 +7,6 @@ import {
   removeProject,
   updateProject,
   getProjectById,
-  toContainerPath,
 } from './utils/project-manager.js';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -89,7 +88,7 @@ app.get('/api/projects/:projectId/validate', async (req: Request, res: Response)
       return;
     }
 
-    const containerPath = project.containerPath || toContainerPath(project.path);
+    const containerPath = project.containerPath || project.path;
 
     try {
       const stats = await fs.stat(containerPath);
@@ -120,7 +119,7 @@ app.get('/api/projects/:projectId/files', async (req: Request, res: Response) =>
       return;
     }
 
-    const containerPath = project.containerPath || toContainerPath(project.path);
+    const containerPath = project.containerPath || project.path;
     const subPath = req.query.path as string || '';
     const targetPath = path.join(containerPath, subPath);
 
