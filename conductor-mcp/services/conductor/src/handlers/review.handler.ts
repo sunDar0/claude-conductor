@@ -1,12 +1,17 @@
 import type { ReviewInput, ReviewResult, ReviewPoint, FileChange } from '../types/index.js';
 import { readTaskRegistry } from '../utils/registry.js';
-import { getChangedFiles, getDefaultBranch, getCurrentBranch, getFileDiff } from '../utils/git.js';
 import { nowISO } from '../utils/date.js';
 import simpleGit from 'simple-git';
 import { spawn } from 'child_process';
 import { autoPipelineLogger as log } from '../utils/logger.js';
 
 type EventPublisher = (event: string, data: unknown) => Promise<void>;
+
+function getFileStatus(f: { insertions: number; deletions: number }): FileChange['status'] {
+  if (f.insertions > 0 && f.deletions === 0) return 'added';
+  if (f.insertions === 0 && f.deletions > 0) return 'deleted';
+  return 'modified';
+}
 
 /**
  * 코드 리뷰 수행
@@ -26,10 +31,30 @@ export async function handleReviewCode(
   }
 
   try {
-    const baseBranch = input.base_branch || await getDefaultBranch();
-    const currentBranch = await getCurrentBranch();
+    const workDir = process.env.WORKSPACE_DIR || '/workspace';
+    const git = simpleGit(workDir);
 
-    const changes = await getChangedFiles(baseBranch);
+    // 기본 브랜치 결정
+    let baseBranch = input.base_branch;
+    if (!baseBranch) {
+      const branches = await git.branch();
+      if (branches.all.includes('main')) baseBranch = 'main';
+      else if (branches.all.includes('master')) baseBranch = 'master';
+      else baseBranch = branches.current || 'main';
+    }
+
+    // 현재 브랜치
+    const status = await git.status();
+    const currentBranch = status.current || 'HEAD';
+
+    // 변경된 파일 목록
+    const diff = await git.diffSummary([`${baseBranch}...${currentBranch}`]);
+    const changes: FileChange[] = diff.files.map(f => ({
+      path: f.file,
+      status: 'insertions' in f ? getFileStatus(f) : 'modified',
+      additions: 'insertions' in f ? f.insertions : 0,
+      deletions: 'deletions' in f ? f.deletions : 0,
+    }));
 
     if (changes.length === 0) {
       return {
@@ -38,7 +63,7 @@ export async function handleReviewCode(
     }
 
     // 변경사항 분석
-    const points = await analyzeChanges(changes, baseBranch);
+    const points = await analyzeChanges(changes, baseBranch, workDir);
 
     const totalAdd = changes.reduce((s, c) => s + c.additions, 0);
     const totalDel = changes.reduce((s, c) => s + c.deletions, 0);
@@ -434,19 +459,19 @@ async function analyzeChanges(changes: FileChange[], baseBranch: string, workDir
     // JS/TS/Java 파일 상세 분석
     if (/\.(ts|js|tsx|jsx|java|py|go)$/.test(change.path) && change.status !== 'deleted') {
       try {
-        // workDir가 제공되면 해당 디렉토리의 git 사용, 아니면 글로벌
+        // workDir가 제공되어야 함
+        if (!workDir) {
+          continue;
+        }
+
+        const localGit = simpleGit(workDir);
+        const isHash = /^[0-9a-f]{7,40}$/.test(baseBranch);
         let diff: string;
-        if (workDir) {
-          const localGit = simpleGit(workDir);
-          const isHash = /^[0-9a-f]{7,40}$/.test(baseBranch);
-          if (isHash) {
-            diff = await localGit.diff([baseBranch, '--', change.path]);
-          } else {
-            const branch = (await localGit.branch()).current;
-            diff = await localGit.diff([`${baseBranch}...${branch}`, '--', change.path]);
-          }
+        if (isHash) {
+          diff = await localGit.diff([baseBranch, '--', change.path]);
         } else {
-          diff = await getFileDiff(baseBranch, change.path);
+          const branch = (await localGit.branch()).current;
+          diff = await localGit.diff([`${baseBranch}...${branch}`, '--', change.path]);
         }
 
         // console.log 체크
