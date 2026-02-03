@@ -5,20 +5,10 @@ import { readTaskRegistry, writeTaskRegistry, getTaskContextPath, getTaskDirPath
 import { nowISO, formatKorean, formatDateOnly, calculateDuration } from '../utils/date.js';
 import { ensureDir } from '../utils/file.js';
 import { taskHandlerLogger as log } from '../utils/logger.js';
+import { createActivity } from '../utils/activity.js';
 import { handleChangelogGenerate } from './changelog.handler.js';
 
 export type EventPublisher = (event: string, data: unknown) => Promise<void>;
-
-// Activity event helper
-function createActivity(type: string, taskId: string, message: string) {
-  return {
-    id: `ACT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-    type,
-    task_id: taskId,
-    message,
-    timestamp: nowISO(),
-  };
-}
 
 function generateTaskId(counter: number): string {
   return `TASK-${String(counter).padStart(3, '0')}`;

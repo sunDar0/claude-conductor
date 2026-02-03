@@ -8,6 +8,7 @@ import { getProjects, getProjectById } from '../utils/project-manager.js';
 import { autoPipelineLogger as log } from '../utils/logger.js';
 import * as fs from 'fs/promises';
 import { nowISO } from '../utils/date.js';
+import { createActivity } from '../utils/activity.js';
 import { addPipelineAgent, updatePipelineAgent, removePipelineAgent } from '../http-server.js';
 import { getAgentRegistry } from '../server.js';
 import { runCodeReview, runSecurityReview } from './review.handler.js';
@@ -113,17 +114,6 @@ function formatGitChanges(changes: GitChangeInfo): string {
   }
 
   return md;
-}
-
-// Activity event helper
-function createActivity(type: string, taskId: string, message: string) {
-  return {
-    id: `ACT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-    type,
-    task_id: taskId,
-    message,
-    timestamp: nowISO(),
-  };
 }
 
 let redis: Redis | null = null;
