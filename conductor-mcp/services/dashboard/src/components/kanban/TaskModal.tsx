@@ -1,4 +1,4 @@
-import { AlertCircle, Calendar, Check, ChevronDown, ChevronUp, Clock, FileText, GitBranch, GitCommit, Maximize2, Minimize2, Play, RotateCcw, StopCircle, Terminal, Trash2, X } from 'lucide-react';
+import { AlertCircle, Calendar, Check, ChevronDown, ChevronUp, Clock, Eye, EyeOff, FileText, GitBranch, GitCommit, Maximize2, Minimize2, Play, RotateCcw, StopCircle, Terminal, Trash2, X } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -11,19 +11,20 @@ import { Badge } from '../common/Badge';
 import { Button } from '../common/Button';
 import { Modal } from '../common/Modal';
 
-const PRIORITY_COLORS = {
-  low: 'bg-gray-400 text-gray-800',
-  medium: 'bg-blue-400 text-blue-800',
-  high: 'bg-orange-400 text-orange-800',
-  critical: 'bg-red-500 text-white',
-};
-
 const STATUS_COLORS = {
-  BACKLOG: 'bg-gray-500',
+  BACKLOG: 'bg-gray-400',
   READY: 'bg-blue-500',
   IN_PROGRESS: 'bg-amber-500',
   REVIEW: 'bg-purple-500',
   DONE: 'bg-green-500',
+  CLOSED: 'bg-gray-300',
+};
+
+const PRIORITY_COLORS = {
+  low: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+  medium: 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300',
+  high: 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300',
+  critical: 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300',
 };
 
 // Parse output line with event type prefix
@@ -110,12 +111,80 @@ function extractFinalResultFromOutput(lines: string[] | undefined): string | nul
   return null;
 }
 
+// Extract the last output section from context (regular or orchestrated)
+function findLastOutputSection(content: string): { type: 'regular' | 'orchestrated'; body: string } | null {
+  // Find all output section start positions
+  const sections: Array<{ type: 'regular' | 'orchestrated'; index: number }> = [];
+
+  const regularPattern = /## Pipeline Output[^\n]*\n/g;
+  const orchestratedPattern = /## Orchestrated Pipeline Output[^\n]*\n/g;
+
+  let match;
+  while ((match = regularPattern.exec(content)) !== null) {
+    sections.push({ type: 'regular', index: match.index });
+  }
+  while ((match = orchestratedPattern.exec(content)) !== null) {
+    sections.push({ type: 'orchestrated', index: match.index });
+  }
+
+  if (sections.length === 0) return null;
+
+  // Sort by position and take the last one
+  sections.sort((a, b) => a.index - b.index);
+  const last = sections[sections.length - 1];
+
+  // Extract body from the section start to the next top-level section or end
+  const afterSection = content.substring(last.index);
+  // Find next ## Pipeline Output or ## Orchestrated Pipeline Output (another run)
+  const nextRunMatch = afterSection.match(/\n## (?:Pipeline Output|Orchestrated Pipeline Output)/);
+  const body = nextRunMatch
+    ? afterSection.substring(0, nextRunMatch.index)
+    : afterSection;
+
+  return { type: last.type, body };
+}
+
+// Extract the code/executor agent's output from orchestrated output
+function extractCodeAgentOutput(orchestratedBody: string): string | null {
+  // Try multiple agent names that do implementation work
+  for (const name of ['code', 'executor']) {
+    const result = extractAgentOutput(orchestratedBody, name);
+    if (result) return result;
+  }
+  return null;
+}
+
+// Extract a specific agent's output from orchestrated output by exact name
+function extractAgentOutput(orchestratedBody: string, role: string): string | null {
+  const pattern = new RegExp(`### ${role} Agent \\(success\\)\\n([\\s\\S]*?)(?=\\n### [\\w-]+ Agent \\(|$)`);
+  const match = orchestratedBody.match(pattern);
+  if (match) {
+    return match[1].replace(/\n> 소요:.*$/m, '').trim();
+  }
+  return null;
+}
+
+// Try multiple agent name candidates, return first match
+function extractAgentOutputMulti(orchestratedBody: string, candidates: string[]): string | null {
+  for (const name of candidates) {
+    const result = extractAgentOutput(orchestratedBody, name);
+    if (result) return result;
+  }
+  return null;
+}
+
 // Extract Final Result from context file content (가장 최근 Pipeline Output의 Final Result)
 function extractFinalResultFromContext(content: string | null): string | null {
   if (!content) return null;
 
-  // 마지막 "### Final Result" 위치를 찾아서 끝까지 캡처
-  // (본문 안에 --- 수평선이 있을 수 있으므로 \n--- 로 자르면 안됨)
+  const lastSection = findLastOutputSection(content);
+
+  if (lastSection?.type === 'orchestrated') {
+    // For orchestrated output, use the code agent's output as the final result
+    return extractCodeAgentOutput(lastSection.body);
+  }
+
+  // Regular pipeline: find "### Final Result"
   const lastIdx = content.lastIndexOf('### Final Result');
   if (lastIdx !== -1) {
     const afterHeader = content.substring(lastIdx);
@@ -144,11 +213,24 @@ function extractFinalResultFromContext(content: string | null): string | null {
 function extractChangesSection(content: string | null): string | null {
   if (!content) return null;
 
-  // Find the last "## Changes" section
+  // Find the last "## Changes" section (regular pipeline only — orchestrated doesn't have this)
   const changesMatches = content.match(/## Changes\s*\n([\s\S]*?)(?=\n## |$)/g);
   if (changesMatches && changesMatches.length > 0) {
     const lastMatch = changesMatches[changesMatches.length - 1];
     return lastMatch.replace(/## Changes\s*\n/, '').trim();
+  }
+
+  // For orchestrated output, check if code agent output contains change summary tables
+  const lastSection = findLastOutputSection(content);
+  if (lastSection?.type === 'orchestrated') {
+    const codeOutput = extractCodeAgentOutput(lastSection.body);
+    if (codeOutput) {
+      // Look for change summary patterns (tables with 변경 전/후 or 변경된 파일)
+      const changeTableMatch = codeOutput.match(/(## 변경 사항 요약[\s\S]*?)(?=\n## |$)/);
+      if (changeTableMatch) return changeTableMatch[1].trim();
+      const changedFilesMatch = codeOutput.match(/(### 변경된 파일[\s\S]*?)(?=\n### [^변]|$)/);
+      if (changedFilesMatch) return changedFilesMatch[1].trim();
+    }
   }
 
   return null;
@@ -158,12 +240,22 @@ function extractChangesSection(content: string | null): string | null {
 function extractReviewSection(content: string | null): { markdown: string | null; hasCritical: boolean; historyMarkdown: string | null; iterations: number } {
   if (!content) return { markdown: null, hasCritical: false, historyMarkdown: null, iterations: 0 };
 
-  // Find the last "## Code Review:" or "## 코드 리뷰:" section
+  // Find the last "## Code Review:" or "## 코드 리뷰:" section (regular pipeline)
   const reviewMatches = content.match(/## (?:Code Review|코드 리뷰)[:\s][^\n]*\n([\s\S]*?)(?=\n## (?!#)|$)/g);
   if (reviewMatches && reviewMatches.length > 0) {
     const lastMatch = reviewMatches[reviewMatches.length - 1];
     const hasCritical = /(?:Critical|치명적|critical)/i.test(lastMatch);
     return { markdown: lastMatch.trim(), hasCritical, historyMarkdown: null, iterations: 0 };
+  }
+
+  // For orchestrated output, extract from review agent (handles various agent names)
+  const lastSection = findLastOutputSection(content);
+  if (lastSection?.type === 'orchestrated') {
+    const reviewOutput = extractAgentOutputMulti(lastSection.body, ['review', 'code-reviewer']);
+    if (reviewOutput) {
+      const hasCritical = /(?:Critical|치명적|critical)/i.test(reviewOutput);
+      return { markdown: `## 코드 리뷰 (review Agent)\n\n${reviewOutput}`, hasCritical, historyMarkdown: null, iterations: 0 };
+    }
   }
 
   return { markdown: null, hasCritical: false, historyMarkdown: null, iterations: 0 };
@@ -173,11 +265,23 @@ function extractReviewSection(content: string | null): { markdown: string | null
 function extractSecuritySection(content: string | null): { markdown: string | null; hasCritical: boolean } {
   if (!content) return { markdown: null, hasCritical: false };
 
-  const secMatches = content.match(/## (?:Security Review|보안 점검)[:\s][^\n]*\n([\s\S]*?)(?=\n## (?!#)|$)/g);
+  // Regular pipeline format — handles various Korean/English security section headers
+  // Matches: 보안 점검, 보안 검토, 보안 리뷰, 보안 분석, Security Review (with optional emoji prefix)
+  const secMatches = content.match(/## (?:🔒\s*)?(?:Security Review|보안 (?:점검|검토|리뷰|분석))[:\s—][^\n]*\n([\s\S]*?)(?=\n## (?!#)|$)/g);
   if (secMatches && secMatches.length > 0) {
     const lastMatch = secMatches[secMatches.length - 1];
     const hasCritical = /(?:Critical|치명적|critical)/i.test(lastMatch);
     return { markdown: lastMatch.trim(), hasCritical };
+  }
+
+  // For orchestrated output, extract from security agent (handles various agent names)
+  const lastSection = findLastOutputSection(content);
+  if (lastSection?.type === 'orchestrated') {
+    const securityOutput = extractAgentOutputMulti(lastSection.body, ['security', 'security-reviewer']);
+    if (securityOutput) {
+      const hasCritical = /(?:Critical|치명적|critical)/i.test(securityOutput);
+      return { markdown: `## 보안 점검 (security Agent)\n\n${securityOutput}`, hasCritical };
+    }
   }
 
   return { markdown: null, hasCritical: false };
@@ -191,7 +295,9 @@ function extractRunHistory(content: string | null): { totalRuns: number; lastRun
   const reruns = (content.match(/## Pipeline Output — 재실행/g) || []).length;
   // 이전 포맷 호환 (구분 없는 Pipeline Output)
   const legacyRuns = (content.match(/## Pipeline Output \(/g) || []).length;
-  const totalRuns = initialRuns + reruns + legacyRuns;
+  // Orchestrated pipeline runs
+  const orchestratedRuns = (content.match(/## Orchestrated Pipeline Output/g) || []).length;
+  const totalRuns = initialRuns + reruns + legacyRuns + orchestratedRuns;
 
   const isRerun = reruns > 0;
   let lastFeedback: string | null = null;
@@ -216,6 +322,8 @@ export function TaskModal() {
   const fetchTasks = useTaskStore((s) => s.fetchTasks);
   const pipelineOutput = useTaskStore((s) => s.pipelineOutput);
   const clearPipelineOutput = useTaskStore((s) => s.clearPipelineOutput);
+  const hideTask = useTaskStore((s) => s.hideTask);
+  const unhideTask = useTaskStore((s) => s.unhideTask);
   const [feedback, setFeedback] = useState('');
   const [loading, setLoading] = useState(false);
   const [contextContent, setContextContent] = useState<string | null>(null);
@@ -392,22 +500,75 @@ export function TaskModal() {
   return (
     <Modal isOpen={true} onClose={closeTaskModal} title={task.id} size={isFullScreen ? 'full' : 'lg'}>
       <div className="space-y-4">
-        <div className="flex items-center gap-2">
-          <div className={cn('w-3 h-3 rounded-full', STATUS_COLORS[task.status])} />
-          <span className="text-sm font-medium">{task.status.replace('_', ' ')}</span>
-          <Badge className={cn('ml-2', PRIORITY_COLORS[task.priority])}>
+        {/* Header: Status + Priority + Actions - matching TaskCard layout */}
+        <div className="flex items-center gap-3 pb-4 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex items-center gap-2">
+            <div className={cn('w-2.5 h-2.5 rounded-full', STATUS_COLORS[task.status])} />
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {task.status.replace('_', ' ')}
+            </span>
+          </div>
+          <Badge className={cn('text-xs px-2.5 py-1 font-medium border-0', PRIORITY_COLORS[task.priority])}>
             {task.priority}
           </Badge>
-          <button
-            onClick={() => setIsFullScreen(!isFullScreen)}
-            className="ml-auto p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400"
-            title={isFullScreen ? '기본 크기' : '전체 화면'}
-          >
-            {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-          </button>
+
+          {/* Action buttons - matching TaskCard style */}
+          <div className="ml-auto flex items-center gap-2">
+            {(task.status === 'BACKLOG' || task.status === 'READY' || task.status === 'DONE') && (() => {
+              const isHidden = task.hidden;
+              return (
+                <button
+                  onClick={() => {
+                    if (isHidden) {
+                      unhideTask(task.id);
+                    } else {
+                      hideTask(task.id);
+                      closeTaskModal();
+                    }
+                  }}
+                  className={cn(
+                    'p-2 rounded-lg transition-colors',
+                    isHidden
+                      ? 'text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/30'
+                      : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
+                  )}
+                  title={isHidden ? '숨김 해제' : '숨기기'}
+                >
+                  {isHidden ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                </button>
+              );
+            })()}
+            {task.status === 'BACKLOG' && (
+              <button
+                onClick={async () => {
+                  if (!confirm(`"${task.title}" 태스크를 삭제하시겠습니까?`)) return;
+                  try {
+                    await api.delete(`/tasks/${task.id}`);
+                    toast.success('태스크가 삭제되었습니다.');
+                    closeTaskModal();
+                    fetchTasks();
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : '삭제 실패');
+                  }
+                }}
+                className="p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-500 transition-colors"
+                title="삭제"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              onClick={() => setIsFullScreen(!isFullScreen)}
+              className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 transition-colors"
+              title={isFullScreen ? '기본 크기' : '전체 화면'}
+            >
+              {isFullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </button>
+          </div>
         </div>
 
-        <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+        {/* Title */}
+        <h2 className="text-2xl font-semibold text-gray-900 dark:text-white -mt-2">
           {task.title}
         </h2>
 
@@ -491,8 +652,8 @@ export function TaskModal() {
           </div>
         )}
 
-        {/* Final Result - shown in REVIEW status */}
-        {task.status === 'REVIEW' && (
+        {/* Final Result - shown in REVIEW and DONE status */}
+        {(task.status === 'REVIEW' || task.status === 'DONE') && (
           <div className="border-t dark:border-gray-700 pt-4">
             <button
               onClick={() => setOpenSections(s => ({ ...s, finalResult: !s.finalResult }))}
@@ -535,8 +696,8 @@ export function TaskModal() {
           </div>
         )}
 
-        {/* Changes (Before → After) - shown in REVIEW status */}
-        {task.status === 'REVIEW' && changesSection && (
+        {/* Changes (Before → After) - shown in REVIEW and DONE status */}
+        {(task.status === 'REVIEW' || task.status === 'DONE') && changesSection && (
           <div className="border-t dark:border-gray-700 pt-4">
             <button
               onClick={() => setOpenSections(s => ({ ...s, changes: !s.changes }))}
@@ -575,8 +736,8 @@ export function TaskModal() {
           </div>
         )}
 
-        {/* Code Review - shown in REVIEW status */}
-        {task.status === 'REVIEW' && (
+        {/* Code Review - shown in REVIEW and DONE status */}
+        {(task.status === 'REVIEW' || task.status === 'DONE') && (
           <div className="border-t dark:border-gray-700 pt-4">
             <button
               onClick={() => setOpenSections(s => ({ ...s, codeReview: !s.codeReview }))}
@@ -611,7 +772,7 @@ export function TaskModal() {
         )}
 
         {/* Security Review - shown in REVIEW status */}
-        {task.status === 'REVIEW' && securityInfo.markdown && (
+        {(task.status === 'REVIEW' || task.status === 'DONE') && securityInfo.markdown && (
           <div className="border-t dark:border-gray-700 pt-4">
             <button
               onClick={() => setOpenSections(s => ({ ...s, security: !s.security }))}
