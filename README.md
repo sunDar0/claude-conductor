@@ -4,7 +4,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue?style=flat-square)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
-> AI가 기반이 되는 자동화된 개발 오케스트레이션 시스템. n8n과 유사하지만 AI가 지원하는 개발 워크플로우를 위한 도구입니다.
+> AI 개발자(Claude)를 위한 태스크 관리 · 실행 · 검수 시스템. 태스크를 생성하면 AI가 자동으로 구현하고, 사람은 검수와 피드백에만 집중하는 human-in-the-loop 개발 오케스트레이터입니다.
 
 Claude Conductor는 개발 작업의 전체 라이프사이클을 자동화합니다: 생성과 구현부터 코드 검토와 완료까지. Claude AI와 통합되어 개발자가 의사결정에만 집중할 수 있도록 지원하면서 프로젝트 작업을 지능적으로 처리합니다.
 
