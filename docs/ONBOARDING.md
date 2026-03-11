@@ -904,7 +904,7 @@ VITE_WS_URL=ws://localhost:3101
 
 #### 전체 시스템 시작 (권장)
 ```bash
-cd /Users/kakaovx/work/claude-conductor
+cd <project-root>
 ./start.sh
 ```
 
