@@ -42,6 +42,18 @@ export const api = {
     return json;
   },
 
+  async patch<T = unknown>(path: string, body?: unknown): Promise<T> {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    if (json.success === false) throw new Error(json.error || 'Request failed');
+    return json;
+  },
+
   async delete<T = unknown>(path: string): Promise<T> {
     const res = await fetch(`${BASE_URL}${path}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

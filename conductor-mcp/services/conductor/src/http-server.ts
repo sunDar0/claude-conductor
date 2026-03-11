@@ -243,6 +243,29 @@ app.delete('/api/tasks/:taskId', async (req: Request, res: Response) => {
   }
 });
 
+// Toggle task hidden state
+app.patch('/api/tasks/:taskId/hidden', async (req: Request, res: Response) => {
+  try {
+    const { handleTaskHide } = await import('./handlers/task.handler.js');
+    const { hidden } = req.body;
+    if (typeof hidden !== 'boolean') {
+      res.status(400).json({ success: false, error: 'hidden field must be boolean' });
+      return;
+    }
+    const result = await handleTaskHide(
+      { task_id: req.params.taskId, hidden },
+      publishEvent
+    );
+    if (result.isError) {
+      res.status(400).json({ success: false, error: result.content[0].text });
+    } else {
+      res.json({ success: true, message: result.content[0].text });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});
+
 // Manual pipeline trigger for existing READY tasks
 app.post('/api/tasks/:taskId/run', async (req: Request, res: Response) => {
   try {

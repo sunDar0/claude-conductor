@@ -9,17 +9,24 @@ interface Props {
   title: string;
   color: string;
   tasks: Task[];
+  disabled?: boolean;
+  isBeingDragged?: boolean;
+  canDragFrom?: boolean;
 }
 
-export function KanbanColumn({ status, title, color, tasks }: Props) {
-  const { setNodeRef, isOver } = useDroppable({ id: status });
+export function KanbanColumn({ status, title, color, tasks, disabled, isBeingDragged, canDragFrom: _canDragFrom = true }: Props) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: status,
+    disabled: disabled
+  });
 
   return (
     <div
       ref={setNodeRef}
       className={cn(
-        'flex flex-col w-72 min-w-72 rounded-xl bg-gray-100 dark:bg-gray-800',
-        isOver && 'ring-2 ring-blue-500'
+        'flex flex-col w-72 min-w-72 rounded-xl bg-gray-100 dark:bg-gray-800 transition-opacity',
+        isOver && !disabled && 'ring-2 ring-blue-500',
+        disabled && isBeingDragged && 'opacity-50 cursor-not-allowed'
       )}
     >
       <div className="flex items-center gap-2 px-3 py-2">

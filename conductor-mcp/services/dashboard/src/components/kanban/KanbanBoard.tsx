@@ -11,24 +11,36 @@ import {
 } from '@dnd-kit/core';
 import { Plus } from 'lucide-react';
 import { KanbanColumn } from './KanbanColumn';
+import { HiddenColumn } from './HiddenColumn';
 import { TaskCard } from './TaskCard';
 import { CreateTaskModal } from './CreateTaskModal';
 import { useTaskStore } from '../../store/taskStore';
 import type { Task, TaskStatus } from '../../types';
 
-const COLUMNS: { id: TaskStatus; title: string; color: string }[] = [
-  { id: 'BACKLOG', title: 'Backlog', color: 'bg-gray-500' },
-  { id: 'READY', title: 'Ready', color: 'bg-blue-500' },
-  { id: 'IN_PROGRESS', title: 'In Progress', color: 'bg-amber-500' },
-  { id: 'REVIEW', title: 'Review', color: 'bg-purple-500' },
-  { id: 'DONE', title: 'Done', color: 'bg-green-500' },
+const COLUMNS: { id: TaskStatus; title: string; color: string; draggable: boolean }[] = [
+  { id: 'BACKLOG', title: 'Backlog', color: 'bg-gray-500', draggable: true },
+  { id: 'READY', title: 'Ready', color: 'bg-blue-500', draggable: true },
+  { id: 'IN_PROGRESS', title: 'In Progress', color: 'bg-amber-500', draggable: false },
+  { id: 'REVIEW', title: 'Review', color: 'bg-purple-500', draggable: false },
+  { id: 'DONE', title: 'Done', color: 'bg-green-500', draggable: true },
 ];
+
+// Valid drag-drop combinations: BACKLOG ↔ READY ↔ DONE
+const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
+  BACKLOG: ['READY', 'DONE'],
+  READY: ['BACKLOG', 'DONE'],
+  IN_PROGRESS: [], // Cannot drag
+  REVIEW: [], // Cannot drag
+  DONE: ['BACKLOG', 'READY'],
+  CLOSED: [], // Cannot drag
+};
 
 export function KanbanBoard() {
   const tasks = useTaskStore((s) => s.tasks);
   const moveTask = useTaskStore((s) => s.moveTask);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
@@ -41,10 +53,12 @@ export function KanbanBoard() {
       IN_PROGRESS: [],
       REVIEW: [],
       DONE: [],
+      CLOSED: [],
     };
 
     Object.values(tasks).forEach((t) => {
-      if (grouped[t.status]) {
+      // Filter out hidden tasks from regular columns
+      if (!t.hidden && grouped[t.status]) {
         grouped[t.status].push(t);
       }
     });
@@ -59,13 +73,19 @@ export function KanbanBoard() {
     return grouped;
   }, [tasks]);
 
+  const hiddenTasks = useMemo(() => {
+    return Object.values(tasks).filter((t) => t.hidden);
+  }, [tasks]);
+
   const handleDragStart = (event: DragStartEvent) => {
     const task = tasks[event.active.id as string];
     setActiveTask(task || null);
+    setIsDragging(true);
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveTask(null);
+    setIsDragging(false);
     const { active, over } = event;
 
     if (!over) return;
@@ -74,8 +94,12 @@ export function KanbanBoard() {
     const newStatus = over.id as TaskStatus;
     const task = tasks[taskId];
 
-    if (task && task.status !== newStatus && COLUMNS.some((c) => c.id === newStatus)) {
-      moveTask(taskId, newStatus);
+    // Check if transition is valid
+    if (task && task.status !== newStatus) {
+      const validTargets = VALID_TRANSITIONS[task.status];
+      if (validTargets.includes(newStatus)) {
+        moveTask(taskId, newStatus);
+      }
     }
   };
 
@@ -100,15 +124,31 @@ export function KanbanBoard() {
         onDragEnd={handleDragEnd}
       >
         <div className="flex gap-4 h-[calc(100%-3rem)] overflow-x-auto pb-4">
-          {COLUMNS.map((col) => (
-            <KanbanColumn
-              key={col.id}
-              status={col.id}
-              title={col.title}
-              color={col.color}
-              tasks={tasksByColumn[col.id]}
-            />
-          ))}
+          {COLUMNS.map((col) => {
+            // Determine if this column can accept drops when something is being dragged
+            // Can accept drop if: there's an active task AND this column is a valid target
+            const canAcceptDrop = activeTask
+              ? VALID_TRANSITIONS[activeTask.status]?.includes(col.id) || col.id === activeTask.status
+              : true;
+            // Column is "disabled" for drop only when dragging AND can't accept the drop
+            const isDropDisabled = isDragging && !canAcceptDrop;
+
+            return (
+              <KanbanColumn
+                key={col.id}
+                status={col.id}
+                title={col.title}
+                color={col.color}
+                tasks={tasksByColumn[col.id]}
+                disabled={isDropDisabled}
+                isBeingDragged={isDragging}
+                canDragFrom={col.draggable}
+              />
+            );
+          })}
+
+          {/* Hidden Column */}
+          <HiddenColumn tasks={hiddenTasks} />
         </div>
         <DragOverlay>
           {activeTask && <TaskCard task={activeTask} isDragging />}

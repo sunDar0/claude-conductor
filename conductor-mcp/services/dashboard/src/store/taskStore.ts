@@ -16,6 +16,8 @@ interface TaskState {
   moveTask: (taskId: string, newStatus: TaskStatus) => Promise<void>;
   appendPipelineOutput: (taskId: string, output: string) => void;
   clearPipelineOutput: (taskId: string) => void;
+  hideTask: (taskId: string) => Promise<void>;
+  unhideTask: (taskId: string) => Promise<void>;
 }
 
 export const useTaskStore = create<TaskState>((set, get) => ({
@@ -88,5 +90,43 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       const { [taskId]: _, ...rest } = state.pipelineOutput;
       return { pipelineOutput: rest };
     });
+  },
+
+  hideTask: async (taskId) => {
+    const task = get().tasks[taskId];
+    if (!task) return;
+
+    // Optimistic update
+    set((s) => ({
+      tasks: { ...s.tasks, [taskId]: { ...task, hidden: true } },
+    }));
+
+    try {
+      await api.patch(`/tasks/${taskId}/hidden`, { hidden: true });
+    } catch {
+      // Rollback on error
+      set((s) => ({
+        tasks: { ...s.tasks, [taskId]: { ...task, hidden: false } },
+      }));
+    }
+  },
+
+  unhideTask: async (taskId) => {
+    const task = get().tasks[taskId];
+    if (!task) return;
+
+    // Optimistic update
+    set((s) => ({
+      tasks: { ...s.tasks, [taskId]: { ...task, hidden: false } },
+    }));
+
+    try {
+      await api.patch(`/tasks/${taskId}/hidden`, { hidden: false });
+    } catch {
+      // Rollback on error
+      set((s) => ({
+        tasks: { ...s.tasks, [taskId]: { ...task, hidden: true } },
+      }));
+    }
   },
 }));

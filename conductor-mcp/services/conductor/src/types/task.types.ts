@@ -29,6 +29,7 @@ export interface Task {
   session_id: string | null;
   last_error: string | null;
   base_commit: string | null;
+  hidden: boolean;                 // 숨김 여부 (칸반 보드에서 숨김 처리)
 }
 
 // 프로젝트 관련 타입
@@ -56,11 +57,11 @@ export interface TaskRegistry {
 
 // Corrected valid transitions with BACKLOG state
 export const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
-  BACKLOG: ['READY', 'CLOSED'],
-  READY: ['IN_PROGRESS', 'BACKLOG', 'CLOSED'],
+  BACKLOG: ['READY', 'DONE', 'CLOSED'],
+  READY: ['IN_PROGRESS', 'BACKLOG', 'DONE', 'CLOSED'],
   IN_PROGRESS: ['REVIEW', 'READY', 'CLOSED'],
   REVIEW: ['DONE', 'IN_PROGRESS', 'READY', 'BACKLOG'],
-  DONE: ['CLOSED'],
+  DONE: ['BACKLOG', 'READY', 'CLOSED'],
   CLOSED: [],
 };
 

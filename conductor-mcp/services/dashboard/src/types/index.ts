@@ -1,4 +1,4 @@
-export type TaskStatus = 'BACKLOG' | 'READY' | 'IN_PROGRESS' | 'REVIEW' | 'DONE';
+export type TaskStatus = 'BACKLOG' | 'READY' | 'IN_PROGRESS' | 'REVIEW' | 'DONE' | 'CLOSED';
 export type TaskPriority = 'low' | 'medium' | 'high' | 'critical';
 export type ServerStatus = 'starting' | 'running' | 'stopping' | 'stopped' | 'error';
 
@@ -16,6 +16,7 @@ export interface Task {
   completed_at: string | null;
   changelog_versions: number[];
   feedback_history: Feedback[];
+  hidden: boolean;
 }
 
 export interface Feedback {

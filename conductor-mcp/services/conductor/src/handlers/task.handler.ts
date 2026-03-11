@@ -120,6 +120,7 @@ export async function handleTaskCreate(
     session_id: null,
     last_error: null,
     base_commit: null,
+    hidden: false,
   };
 
   registry.tasks[taskId] = task;
@@ -399,6 +400,34 @@ Allowed: ${VALID_TRANSITIONS[task.status].join(', ') || 'none'}`,
       text: `${STATUS_EMOJI[input.target_state]} Status changed: ${task.id}
 
 ${prevStatus} -> ${input.target_state}`,
+    }],
+  };
+}
+
+export async function handleTaskHide(
+  input: { task_id: string; hidden: boolean },
+  publish: EventPublisher
+) {
+  const registry = await readTaskRegistry();
+  const task = registry.tasks[input.task_id];
+  if (!task) {
+    return {
+      content: [{ type: 'text', text: `Task not found: ${input.task_id}` }],
+      isError: true,
+    };
+  }
+
+  task.hidden = input.hidden;
+  task.updated_at = nowISO();
+  await writeTaskRegistry(registry);
+  await publish('task.updated', { task });
+
+  return {
+    content: [{
+      type: 'text',
+      text: input.hidden
+        ? `Task hidden: ${task.id}`
+        : `Task unhidden: ${task.id}`,
     }],
   };
 }
