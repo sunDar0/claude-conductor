@@ -6,6 +6,7 @@ import type { Task } from '../types/task.types.js';
 import { readTaskRegistry, writeTaskRegistry, getTaskContextPath, getTaskPromptPath } from '../utils/registry.js';
 import { getProjects, getProjectById } from '../utils/project-manager.js';
 import { autoPipelineLogger as log } from '../utils/logger.js';
+import { parseStreamEvent } from '../utils/stream-parser.js';
 import * as fs from 'fs/promises';
 import { nowISO } from '../utils/date.js';
 import { createActivity } from '../utils/activity.js';
@@ -18,7 +19,7 @@ import { AgentManager } from '../orchestration/agent-manager.js';
 import type { OrchestrationPlan, OrchestrationStage, AgentRole } from '../types/agent.types.js';
 
 // Git 변경사항 수집을 위한 인터페이스
-interface GitChangeInfo {
+export interface GitChangeInfo {
   baseCommit: string;
   files: Array<{
     path: string;
@@ -89,7 +90,7 @@ async function collectGitChanges(workDir: string, baseCommit: string): Promise<G
 }
 
 // Git 변경사항을 Markdown으로 포맷팅
-function formatGitChanges(changes: GitChangeInfo): string {
+export function formatGitChanges(changes: GitChangeInfo): string {
   if (changes.files.length === 0) {
     return '';
   }
@@ -124,10 +125,11 @@ let parallelEngine: ParallelEngine | null = null;
 let agentManager: AgentManager | null = null;
 
 // Determine if a task should use orchestrated (multi-agent) execution
-function shouldUseOrchestration(task: Task): boolean {
+export function shouldUseOrchestration(task: Task, engine?: unknown): boolean {
   const hasUnresolvedFeedback = task.feedback_history.some(fb => !fb.resolved);
   const isResume = !!task.session_id;
-  return !!parallelEngine && !isResume && !hasUnresolvedFeedback;
+  const engineAvailable = engine !== undefined ? !!engine : !!parallelEngine;
+  return engineAvailable && !isResume && !hasUnresolvedFeedback;
 }
 
 // Project-based queue: one task at a time per project
@@ -236,7 +238,7 @@ export async function runAutoPipeline(taskId: string): Promise<void> {
       projectQueues.get(projectId)!.push(taskId);
       const queueSize = projectQueues.get(projectId)!.length;
       log.info({ taskId, projectId, queueSize }, 'Task queued for project');
-      await publishEventFn('pipeline:queued', { task_id: taskId, project_id: projectId, queue_position: queueSize });
+      await publishEventFn('pipeline.queued', { task_id: taskId, project_id: projectId, queue_position: queueSize });
       return;
     }
 
@@ -291,7 +293,7 @@ export async function runAutoPipeline(taskId: string): Promise<void> {
     }
 
     // Choose execution path: orchestrated vs direct CLI
-    const useOrchestration = shouldUseOrchestration(task);
+    const useOrchestration = shouldUseOrchestration(task, parallelEngine);
 
     if (useOrchestration) {
       // Orchestrated execution: multi-agent pipeline
@@ -558,7 +560,7 @@ async function runOrchestrated(taskId: string, workDir: string, task: Task, proj
   log.info({ taskId, planId: plan.id, stages: plan.stages.length, strategy: plan.strategy }, 'Orchestration plan created');
 
   // Notify dashboard
-  await publishEventFn('pipeline:output', {
+  await publishEventFn('pipeline.output', {
     task_id: taskId,
     event_type: 'info',
     output: `🎭 오케스트레이션 시작 — ${plan.stages.length}단계, 전략: ${plan.strategy}`,
@@ -645,7 +647,7 @@ async function runOrchestrated(taskId: string, workDir: string, task: Task, proj
         updatedTask.last_error = null;
         updatedTask.updated_at = new Date().toISOString();
         await writeTaskRegistry(registry);
-        await publishEventFn('task:review', { id: taskId, status: 'REVIEW' });
+        await publishEventFn('task.review', { id: taskId, status: 'REVIEW' });
         await publishEventFn('activity', createActivity('task.review', taskId, `Orchestration completed: ${updatedTask.title} - ready for review`));
         updatePipelineAgent(taskId, 'completed');
         await publishEventFn('agent.completed', { agentId: `pipeline-${taskId}` });
@@ -668,7 +670,7 @@ async function runOrchestrated(taskId: string, workDir: string, task: Task, proj
           updatedTask.status = 'REVIEW';
           updatedTask.updated_at = new Date().toISOString();
           await writeTaskRegistry(registry);
-          await publishEventFn('task:review', { id: taskId, status: 'REVIEW' });
+          await publishEventFn('task.review', { id: taskId, status: 'REVIEW' });
           log.info({ taskId }, 'Main task succeeded despite review failures, moved to REVIEW');
         }
       }
@@ -677,7 +679,7 @@ async function runOrchestrated(taskId: string, workDir: string, task: Task, proj
       setTimeout(() => removePipelineAgent(taskId), 60000);
     }
 
-    await publishEventFn('pipeline:output', {
+    await publishEventFn('pipeline.output', {
       task_id: taskId,
       event_type: allSuccess ? 'complete' : 'error',
       output: allSuccess
@@ -697,7 +699,7 @@ async function runOrchestrated(taskId: string, workDir: string, task: Task, proj
         errTask.status = 'READY';
         errTask.updated_at = new Date().toISOString();
         await writeTaskRegistry(errRegistry);
-        await publishEventFn('task:review', { id: taskId, status: 'READY' });
+        await publishEventFn('task.review', { id: taskId, status: 'READY' });
       }
     } catch (e) {
       log.error({ taskId, error: e }, 'Failed to transition task back to READY');
@@ -730,67 +732,6 @@ interface StreamEvent {
   duration_ms?: number;
   duration_api_ms?: number;
   total_cost_usd?: number;
-}
-
-// Parse stream-json output and extract meaningful progress info
-function parseStreamEvent(line: string): { type: string; content: string } | null {
-  try {
-    const event: StreamEvent = JSON.parse(line);
-
-    switch (event.type) {
-      case 'system':
-        if (event.subtype === 'init') {
-          return { type: 'init', content: '🚀 Claude CLI 세션 시작' };
-        }
-        return null;
-
-      case 'assistant':
-        if (event.message?.content) {
-          for (const item of event.message.content) {
-            if (item.type === 'text' && item.text) {
-              // Return AI's thinking/response text
-              return { type: 'thinking', content: item.text };
-            }
-            if (item.type === 'tool_use' && item.name) {
-              // Return tool being used
-              const toolInfo = item.name;
-              let detail = '';
-              if (item.input && typeof item.input === 'object') {
-                const input = item.input as Record<string, unknown>;
-                if (input.pattern) detail = ` "${input.pattern}"`;
-                else if (input.file_path) detail = ` "${input.file_path}"`;
-                else if (input.command) detail = ` "${String(input.command).substring(0, 50)}..."`;
-              }
-              return { type: 'tool', content: `🔧 ${toolInfo}${detail}` };
-            }
-          }
-        }
-        return null;
-
-      case 'user':
-        // Tool results - usually not needed to show
-        return null;
-
-      case 'result':
-        if (event.subtype === 'success') {
-          const duration = event.duration_ms ? `${(event.duration_ms / 1000).toFixed(1)}초` : '';
-          const cost = event.total_cost_usd ? `$${event.total_cost_usd.toFixed(4)}` : '';
-          return {
-            type: 'complete',
-            content: `✅ 작업 완료 ${duration ? `(${duration}` : ''}${cost ? `, ${cost})` : duration ? ')' : ''}\n\n${event.result || ''}`
-          };
-        } else if (event.subtype === 'error') {
-          return { type: 'error', content: `❌ 오류 발생: ${event.result || '알 수 없는 오류'}` };
-        }
-        return null;
-
-      default:
-        return null;
-    }
-  } catch {
-    // Not valid JSON, might be partial line
-    return null;
-  }
 }
 
 // Extract human-readable output from stream-json for context file
@@ -972,6 +913,9 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
     timeoutId = setTimeout(() => {
       log.warn({ taskId }, 'Timeout reached, killing process');
       claude.kill('SIGTERM');
+      setTimeout(() => {
+        if (!claude.killed) claude.kill('SIGKILL');
+      }, 5000);
     }, TIMEOUT_MS);
 
     claude.stdout?.on('data', (data) => {
@@ -993,7 +937,7 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
           log.info({ taskId, eventType: parsed.type }, parsed.content.substring(0, 100));
 
           // Send structured progress to WebSocket
-          publishEventFn?.('pipeline:output', {
+          publishEventFn?.('pipeline.output', {
             task_id: taskId,
             event_type: parsed.type,
             output: parsed.content,
@@ -1022,7 +966,7 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
         output += lineBuffer + '\n';
         const parsed = parseStreamEvent(lineBuffer);
         if (parsed) {
-          publishEventFn?.('pipeline:output', {
+          publishEventFn?.('pipeline.output', {
             task_id: taskId,
             event_type: parsed.type,
             output: parsed.content,
@@ -1059,7 +1003,7 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
 
         if (code === 0) {
           try {
-            await publishEventFn?.('pipeline:output', {
+            await publishEventFn?.('pipeline.output', {
               task_id: taskId,
               event_type: 'info',
               output: `🔍 AI 코드 리뷰 & 보안 점검 실행 중...`,
@@ -1088,7 +1032,7 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
               reviewSection += `\n\n${securityResult.securityMarkdown}`;
             }
 
-            await publishEventFn?.('pipeline:output', {
+            await publishEventFn?.('pipeline.output', {
               task_id: taskId,
               event_type: hasCritical ? 'error' : 'complete',
               output: hasCritical
@@ -1121,7 +1065,7 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
             }
             task.updated_at = new Date().toISOString();
             await writeTaskRegistry(registry);
-            await publishEventFn?.('task:review', { id: taskId, status: 'REVIEW' });
+            await publishEventFn?.('task.review', { id: taskId, status: 'REVIEW' });
             // Publish activity event for dashboard
             await publishEventFn?.('activity', createActivity('task.review', taskId, `AI completed: ${task.title} - ready for review`));
             // Update pipeline agent status
@@ -1143,7 +1087,7 @@ async function runClaudeCLI(taskId: string, workDir: string, prompt: string, pro
                 errTask.status = 'READY';
                 errTask.updated_at = new Date().toISOString();
                 await writeTaskRegistry(errRegistry);
-                await publishEventFn?.('task:review', { id: taskId, status: 'READY' });
+                await publishEventFn?.('task.review', { id: taskId, status: 'READY' });
               }
             } catch (e) {
               log.error({ taskId, error: e }, 'Failed to transition task back to READY after error');
@@ -1191,7 +1135,7 @@ async function updateTaskError(taskId: string, error: unknown): Promise<void> {
       task.last_error = `Pipeline Error: ${errorMessage}`;
       await writeTaskRegistry(registry);
     }
-    await publishEventFn?.('pipeline:error', {
+    await publishEventFn?.('pipeline.error', {
       task_id: taskId,
       error: errorMessage,
     });
@@ -1227,11 +1171,11 @@ export async function triggerPipeline(taskId: string): Promise<{ success: boolea
       task.started_at = new Date().toISOString();
       task.updated_at = new Date().toISOString();
       await writeTaskRegistry(registry);
-      await publishEventFn?.('task:started', { id: taskId, status: 'IN_PROGRESS' });
+      await publishEventFn?.('task.started', { id: taskId, status: 'IN_PROGRESS' });
       // Publish activity event for dashboard
       await publishEventFn?.('activity', createActivity('task.started', taskId, `AI started working on: ${task.title}`));
       // Add virtual pipeline agent only for direct CLI path (orchestration manages its own agents)
-      const isOrchestrated = shouldUseOrchestration(task);
+      const isOrchestrated = shouldUseOrchestration(task, parallelEngine);
       if (!isOrchestrated) {
         addPipelineAgent(taskId, task.title);
         await publishEventFn?.('agent.spawned', { agentId: `pipeline-${taskId}`, role: 'code', taskId });
