@@ -28,9 +28,14 @@ export function useWebSocket() {
       const payload = msg.type === 'event' ? (msg as { data?: unknown }).data : msg.payload;
 
       switch (eventType) {
-        case 'connection':
-          setWsConnected((payload as { connected: boolean }).connected);
+        case 'connection': {
+          const connPayload = payload as { connected: boolean; reconnect?: boolean };
+          setWsConnected(connPayload.connected);
+          if (connPayload.connected && connPayload.reconnect) {
+            fetchTasks();
+          }
           break;
+        }
         case 'task.created':
         case 'task.updated':
         case 'task.transitioned':
@@ -38,31 +43,22 @@ export function useWebSocket() {
             updateTask((payload as { task: Task }).task);
           }
           break;
-        case 'task:started': {
-          // AI picked up the task (only handle colon notation from auto-pipeline)
+        case 'task.started': {
           const startPayload = payload as { id?: string };
           if (startPayload.id) {
             clearPipelineOutput(startPayload.id);
           }
-          // Check if TaskCard already created a loading toast
           const existingToastId = useToastStore.getState().getPipelineToastId();
           if (existingToastId) {
-            // Update existing toast from loading to info
             toast.update(existingToastId, 'info', 'AI가 작업을 시작했습니다');
           } else {
-            // Create new toast if auto-started
             const toastId = toast.info('AI가 작업을 시작했습니다');
             useToastStore.getState().setPipelineToastId(toastId);
           }
           fetchTasks();
           break;
         }
-        case 'task.started':
-          // Manual start - just refresh, no toast (auto-pipeline will send task:started)
-          fetchTasks();
-          break;
-        case 'task:review': {
-          // AI completed the task (only handle colon notation from auto-pipeline)
+        case 'task.review': {
           const existingToastId = useToastStore.getState().getPipelineToastId();
           if (existingToastId) {
             toast.update(existingToastId, 'success', 'AI 작업이 완료되었습니다. 검토해주세요.');
@@ -73,11 +69,18 @@ export function useWebSocket() {
           fetchTasks();
           break;
         }
-        case 'task.review':
-          // Just refresh, no duplicate toast
+        case 'task.error': {
+          const taskErrToastId = useToastStore.getState().getPipelineToastId();
+          if (taskErrToastId) {
+            toast.update(taskErrToastId, 'error', `작업 오류: ${(payload as { error?: string })?.error || '알 수 없는 오류'}`);
+            useToastStore.getState().setPipelineToastId(null);
+          } else {
+            toast.error(`작업 오류: ${(payload as { error?: string })?.error || '알 수 없는 오류'}`);
+          }
           fetchTasks();
           break;
-        case 'pipeline:error': {
+        }
+        case 'pipeline.error': {
           const pipelineErrToastId = useToastStore.getState().getPipelineToastId();
           if (pipelineErrToastId) {
             toast.update(pipelineErrToastId, 'error', `작업 오류: ${(payload as { error?: string })?.error || '알 수 없는 오류'}`);
@@ -88,16 +91,16 @@ export function useWebSocket() {
           fetchTasks();
           break;
         }
-        case 'pipeline:queued':
+        case 'pipeline.queued':
           toast.info(`작업이 대기열에 추가됨 (${(payload as { queue_position?: number })?.queue_position || 1}번째)`);
           break;
-        case 'pipeline:output': {
+        case 'pipeline.output': {
           // Real-time output - store for display with event type
           const pipelinePayload = payload as { task_id?: string; output?: string; event_type?: string };
           if (pipelinePayload.task_id && pipelinePayload.output) {
             // Format output with event type prefix for UI styling
-            const eventType = pipelinePayload.event_type || 'info';
-            const formattedOutput = `[${eventType}]${pipelinePayload.output}`;
+            const outputEventType = pipelinePayload.event_type || 'info';
+            const formattedOutput = `[${outputEventType}]${pipelinePayload.output}`;
             appendPipelineOutput(pipelinePayload.task_id, formattedOutput);
           }
           break;

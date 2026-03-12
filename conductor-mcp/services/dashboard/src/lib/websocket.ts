@@ -6,7 +6,6 @@ class WSClient {
   private ws: WebSocket | null = null;
   private handlers = new Set<Handler>();
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
 
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN) return;
@@ -16,8 +15,9 @@ class WSClient {
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
+      const isReconnect = this.reconnectAttempts > 0;
       this.reconnectAttempts = 0;
-      this.notify({ type: 'connection', payload: { connected: true }, timestamp: new Date().toISOString() });
+      this.notify({ type: 'connection', payload: { connected: true, reconnect: isReconnect }, timestamp: new Date().toISOString() });
     };
 
     this.ws.onmessage = (e) => {
@@ -61,9 +61,8 @@ class WSClient {
   }
 
   private attemptReconnect() {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
     this.reconnectAttempts++;
-    const delay = 1000 * Math.pow(2, this.reconnectAttempts - 1);
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
     setTimeout(() => this.connect(), delay);
   }
 }

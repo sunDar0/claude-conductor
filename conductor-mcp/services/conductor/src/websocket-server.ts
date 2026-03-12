@@ -2,12 +2,35 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Redis } from 'ioredis';
 import { wsLogger as log } from './utils/logger.js';
 
+const HEARTBEAT_INTERVAL = 30000;
 const clients: Set<WebSocket> = new Set();
 
-export function startWebSocketServer(port: number): void {
+interface HeartbeatWebSocket extends WebSocket {
+  isAlive: boolean;
+}
+
+export function startWebSocketServer(port: number): WebSocketServer {
   const wss = new WebSocketServer({ port });
 
+  const interval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      const hws = ws as HeartbeatWebSocket;
+      if (!hws.isAlive) {
+        hws.terminate();
+        return;
+      }
+      hws.isAlive = false;
+      hws.ping();
+    });
+  }, HEARTBEAT_INTERVAL);
+
+  wss.on('close', () => clearInterval(interval));
+
   wss.on('connection', (ws: WebSocket) => {
+    const hws = ws as HeartbeatWebSocket;
+    hws.isAlive = true;
+    hws.on('pong', () => { hws.isAlive = true; });
+
     log.info('Client connected');
     clients.add(ws);
 
@@ -30,6 +53,8 @@ export function startWebSocketServer(port: number): void {
   });
 
   log.info({ port }, 'Server listening');
+
+  return wss;
 }
 
 export function broadcast(message: unknown): void {
