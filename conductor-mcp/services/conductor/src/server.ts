@@ -15,6 +15,8 @@ import {
   handleTaskGet,
   handleTaskStart,
   handleTaskTransition,
+  handleTaskDelete,
+  handleTaskHide,
 } from './handlers/task.handler.js';
 import {
   handleProjectCreate,
@@ -280,6 +282,29 @@ export async function createMCPServer(): Promise<Server> {
         },
       },
       {
+        name: 'task_delete',
+        description: 'Delete a task (READY or BACKLOG only)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'string', description: 'Task ID to delete' },
+          },
+          required: ['task_id'],
+        },
+      },
+      {
+        name: 'task_hide',
+        description: 'Toggle task hidden state',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'string', description: 'Task ID' },
+            hidden: { type: 'boolean', description: 'Whether to hide the task' },
+          },
+          required: ['task_id', 'hidden'],
+        },
+      },
+      {
         name: 'server_start',
         description: 'Start development server',
         inputSchema: {
@@ -525,6 +550,10 @@ export async function createMCPServer(): Promise<Server> {
           return await handleTaskStart(args as Parameters<typeof handleTaskStart>[0], publishEvent);
         case 'task_transition':
           return await handleTaskTransition(args as Parameters<typeof handleTaskTransition>[0], publishEvent);
+        case 'task_delete':
+          return await handleTaskDelete(args as Parameters<typeof handleTaskDelete>[0], publishEvent);
+        case 'task_hide':
+          return await handleTaskHide(args as Parameters<typeof handleTaskHide>[0], publishEvent);
         case 'server_start':
           return await handleServerStart(args as unknown as Parameters<typeof handleServerStart>[0], publishEvent);
         case 'server_stop':

@@ -495,6 +495,20 @@ export function TaskModal() {
     }
   };
 
+  const handleCancel = async () => {
+    if (!task) return;
+    setLoading(true);
+    try {
+      await api.delete(`/tasks/${task.id}/pipeline`);
+      toast.info('파이프라인이 취소되었습니다');
+      await fetchTasks();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '취소 실패');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (!task) {
     return (
       <Modal isOpen={!!taskModalId} onClose={closeTaskModal} title="Task Not Found">
@@ -644,9 +658,17 @@ export function TaskModal() {
           </div>
         )}
 
-        {/* Restart Action - IN_PROGRESS status */}
+        {/* Restart/Cancel Actions - IN_PROGRESS status */}
         {task.status === 'IN_PROGRESS' && (
           <div className="flex gap-2">
+            <Button
+              variant="danger"
+              onClick={handleCancel}
+              disabled={loading}
+            >
+              <X className="w-4 h-4 mr-1" />
+              취소
+            </Button>
             <Button
               variant="warning"
               onClick={handleRestart}

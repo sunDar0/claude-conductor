@@ -445,7 +445,8 @@ app.post('/api/agent-sources/select', async (req: Request, res: Response) => {
 app.get('/api/agent-sources', async (_req: Request, res: Response) => {
   try {
     const registry = getAgentRegistry();
-    const projectDir = undefined; // TODO: get current project path
+    const projects = await getProjects();
+    const projectDir = projects.length > 0 ? projects[0].path : undefined;
     const { sources, hasOmc } = await AgentRegistry.detectAvailableSources(projectDir);
     res.json({
       success: true,

@@ -17,6 +17,11 @@ export interface Task {
   changelog_versions: number[];
   feedback_history: Feedback[];
   hidden: boolean;
+  project_id?: string;
+  project_path?: string;
+  session_id?: string;
+  last_error?: string;
+  base_commit?: string;
 }
 
 export interface Feedback {

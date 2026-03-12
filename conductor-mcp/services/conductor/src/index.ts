@@ -3,17 +3,20 @@ import { createMCPServer, startStdioTransport } from './server.js';
 import { startHttpServer } from './http-server.js';
 import { startWebSocketServer, startRedisBridge } from './websocket-server.js';
 import detectPort from 'detect-port';
+import { createLogger } from './utils/logger.js';
+
+const log = createLogger('main');
 
 async function findAvailablePort(preferredPort: number): Promise<number> {
   const availablePort = await detectPort(preferredPort);
   if (availablePort !== preferredPort) {
-    console.error(`[Conductor] Port ${preferredPort} in use, using ${availablePort} instead`);
+    log.warn({ preferredPort, availablePort }, 'Port in use, using alternate');
   }
   return availablePort;
 }
 
 async function main() {
-  console.error('[Conductor] Starting services...');
+  log.info('Starting services...');
 
   const preferredHttpPort = parseInt(process.env.HTTP_PORT || '3100', 10);
   const preferredWsPort = parseInt(process.env.WS_PORT || '3101', 10);
@@ -44,10 +47,9 @@ async function main() {
       // Start Redis bridge for event forwarding
       await startRedisBridge();
 
-      console.error(`[Conductor] HTTP API: http://localhost:${httpPort}`);
-      console.error(`[Conductor] WebSocket: ws://localhost:${wsPort}`);
+      log.info({ httpPort, wsPort }, 'HTTP API and WebSocket started');
     } else {
-      console.error('[Conductor] Running in stdio-only mode (HTTP/WS disabled)');
+      log.info('Running in stdio-only mode (HTTP/WS disabled)');
     }
 
     // Start MCP server (always for handling MCP requests)
@@ -56,12 +58,12 @@ async function main() {
     // Connect stdio transport if requested
     if (useStdio || skipHttpWs) {
       await startStdioTransport(server);
-      console.error('[Conductor] MCP stdio transport started');
+      log.info('MCP stdio transport started');
     }
 
-    console.error('[Conductor] All services started successfully');
+    log.info('All services started successfully');
   } catch (error) {
-    console.error('[Conductor] Failed to start:', error);
+    log.error({ error }, 'Failed to start');
     process.exit(1);
   }
 }

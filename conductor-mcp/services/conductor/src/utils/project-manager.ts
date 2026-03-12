@@ -1,4 +1,7 @@
 import { Redis } from 'ioredis';
+import { createLogger } from './logger.js';
+
+const log = createLogger('ProjectManager');
 
 export interface Project {
   id: string;
@@ -28,7 +31,7 @@ export async function getProjects(): Promise<Project[]> {
     if (!data) return [];
     return JSON.parse(data);
   } catch (error) {
-    console.error('[ProjectManager] Failed to get projects:', error);
+    log.error({ error }, 'Failed to get projects');
     return [];
   }
 }

@@ -1,4 +1,5 @@
 import type { DetectionResult } from '../types/index.js';
+import { createLogger } from '../utils/logger.js';
 import { detectNextjs } from './nextjs.detector.js';
 import { detectVite } from './vite.detector.js';
 import { detectExpress } from './express.detector.js';
@@ -6,6 +7,8 @@ import { detectFastAPI } from './fastapi.detector.js';
 import { detectNestJS } from './nestjs.detector.js';
 import { detectSpring } from './spring.detector.js';
 import { detectGoGin } from './go-gin.detector.js';
+
+const log = createLogger('detector');
 
 export async function detectProject(workspacePath: string): Promise<DetectionResult> {
   const detectors = [
@@ -27,7 +30,7 @@ export async function detectProject(workspacePath: string): Promise<DetectionRes
         bestResult = result;
       }
     } catch (error) {
-      console.error(`Detector failed:`, error);
+      log.debug({ error }, 'Detector failed');
     }
   }
 
