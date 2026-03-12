@@ -615,12 +615,22 @@ async function runOrchestrated(taskId: string, workDir: string, task: Task, proj
       }
     }
 
+    // Collect git changes (same as regular pipeline)
+    let changesSection = '';
+    if (baseCommit) {
+      const gitChanges = await collectGitChanges(workDir, baseCommit);
+      if (gitChanges && gitChanges.files.length > 0) {
+        changesSection = formatGitChanges(gitChanges);
+        log.info({ taskId, fileCount: gitChanges.files.length }, 'Git changes collected for orchestration');
+      }
+    }
+
     // Save to context file
     const contextPath = getTaskContextPath(taskId);
     let existingContext = '';
     try { existingContext = await fs.readFile(contextPath, 'utf-8'); } catch { /* first run */ }
     const runLabel = `## Orchestrated Pipeline Output (${new Date().toISOString()})`;
-    const updatedContext = `${existingContext}\n\n${runLabel}\n\n${readableOutput}`;
+    const updatedContext = `${existingContext}\n\n${runLabel}\n\n${readableOutput}${changesSection}`;
     await fs.writeFile(contextPath, updatedContext, 'utf-8');
 
     // Check if any agent failed

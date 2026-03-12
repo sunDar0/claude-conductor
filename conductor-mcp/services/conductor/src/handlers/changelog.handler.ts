@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ChangelogInput, ChangelogEntry, ChangelogVersion, ChangeType } from '../types/index.js';
-import { readTaskRegistry, writeTaskRegistry, getTaskDirPath } from '../utils/registry.js';
+import { readTaskRegistry, writeTaskRegistry, getTaskDirPath, getTaskContextPath } from '../utils/registry.js';
 import { getCommitsForProject, getChangesForProject, parseCommit } from '../utils/git.js';
 import { nowISO, formatDateOnly } from '../utils/date.js';
 import { fileExists } from '../utils/file.js';
@@ -81,28 +81,41 @@ export async function handleChangelogGenerate(
         };
       }
 
-      // 변경된 파일 기준으로 엔트리 생성
-      const added = changes.filter(c => c.status === 'added');
-      const modified = changes.filter(c => c.status === 'modified');
-      const deleted = changes.filter(c => c.status === 'deleted');
+      // context 파일에서 Final Result 추출하여 의미 있는 설명 생성
+      const contextDescription = await extractContextDescription(input.task_id);
 
-      if (added.length > 0) {
+      if (contextDescription) {
+        // Final Result가 있으면 의미 있는 설명 사용
+        const fileList = changes.map(f => `\`${f.path}\``).join(', ');
         entries.push({
-          type: 'Added',
-          description: added.map(f => f.path).join(', '),
+          type: changes.some(c => c.status === 'added') ? 'Added' : 'Changed',
+          description: `${contextDescription} (${fileList})`,
         });
-      }
-      if (modified.length > 0) {
-        entries.push({
-          type: 'Changed',
-          description: modified.map(f => f.path).join(', '),
-        });
-      }
-      if (deleted.length > 0) {
-        entries.push({
-          type: 'Removed',
-          description: deleted.map(f => f.path).join(', '),
-        });
+      } else {
+        // Fallback: 파일 경로 기반 (태스크 제목을 설명으로 사용)
+        const added = changes.filter(c => c.status === 'added');
+        const modified = changes.filter(c => c.status === 'modified');
+        const deleted = changes.filter(c => c.status === 'deleted');
+        const taskDesc = task.title || '';
+
+        if (added.length > 0) {
+          entries.push({
+            type: 'Added',
+            description: `${taskDesc} (${added.map(f => `\`${f.path}\``).join(', ')})`,
+          });
+        }
+        if (modified.length > 0) {
+          entries.push({
+            type: 'Changed',
+            description: `${taskDesc} (${modified.map(f => `\`${f.path}\``).join(', ')})`,
+          });
+        }
+        if (deleted.length > 0) {
+          entries.push({
+            type: 'Removed',
+            description: `${taskDesc} (${deleted.map(f => `\`${f.path}\``).join(', ')})`,
+          });
+        }
       }
     }
 
@@ -291,4 +304,45 @@ function formatChangelogResponse(v: ChangelogVersion, commitCount: number): stri
 - 태스크: \`.claude/tasks/${v.task_id}/CHANGELOG.md\``;
 
   return output;
+}
+
+/**
+ * 태스크 context 파일에서 Final Result 설명 추출
+ */
+async function extractContextDescription(taskId: string): Promise<string | null> {
+  try {
+    const contextPath = getTaskContextPath(taskId);
+    const content = await fs.readFile(contextPath, 'utf-8');
+
+    // Final Result 섹션에서 첫 번째 의미 있는 줄 추출
+    const finalResultMatches = content.match(/### Final Result\s*\n([\s\S]*?)(?=\n---|$)/g);
+    if (finalResultMatches && finalResultMatches.length > 0) {
+      const lastResult = finalResultMatches[finalResultMatches.length - 1]
+        .replace(/### Final Result\s*\n/, '')
+        .trim();
+
+      // 이모지/상태 prefix 제거 후 첫 줄 또는 첫 문장 추출
+      const cleaned = lastResult
+        .replace(/^[\s]*✅[^\n]*\n*/, '')  // "✅ 작업 완료..." 라인 제거
+        .replace(/^\[[\w-]+\]\s*/, '')      // "[role]" prefix 제거
+        .trim();
+
+      if (cleaned) {
+        // 첫 번째 의미 있는 줄 (최대 200자)
+        const firstLine = cleaned.split('\n').find(l => l.trim().length > 0) || '';
+        return firstLine.replace(/^[#\-*>\s]+/, '').trim().substring(0, 200) || null;
+      }
+    }
+
+    // Fallback: "변경 내용:" 또는 "변경 사항 요약" 패턴
+    const summaryMatch = content.match(/(?:변경 내용|변경 사항 요약)[:\s]*\n([\s\S]*?)(?=\n## |$)/);
+    if (summaryMatch) {
+      const firstLine = summaryMatch[1].split('\n').find(l => l.trim().length > 0) || '';
+      return firstLine.replace(/^[#\-*>\s]+/, '').trim().substring(0, 200) || null;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 }

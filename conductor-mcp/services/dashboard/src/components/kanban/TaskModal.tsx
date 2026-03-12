@@ -90,6 +90,11 @@ const markdownComponents = {
   code: DiffCodeBlock,
 };
 
+// Strip orchestration agent role prefix like "[test] ", "[code] " etc.
+function stripRolePrefix(text: string): string {
+  return text.replace(/^\[[\w-]+\]\s*/, '');
+}
+
 // Extract Final Result from pipeline output lines
 function extractFinalResultFromOutput(lines: string[] | undefined): string | null {
   if (!lines || lines.length === 0) return null;
@@ -97,15 +102,16 @@ function extractFinalResultFromOutput(lines: string[] | undefined): string | nul
   for (const line of lines) {
     const { type, content } = parseOutputLine(line);
     if (type === 'complete' && content) {
+      const cleaned = stripRolePrefix(content);
       // Format: "✅ 작업 완료 (30.5초, $0.5775)\n\n{result}"
       // Extract everything after the double newline
-      const parts = content.split('\n\n');
+      const parts = cleaned.split('\n\n');
       if (parts.length > 1) {
         return parts.slice(1).join('\n\n').trim();
       }
       // If no double newline, try to remove the prefix
-      const cleaned = content.replace(/^✅\s*작업 완료.*?\)\s*/, '').trim();
-      return cleaned || null;
+      const withoutEmoji = cleaned.replace(/^✅\s*작업 완료.*?\)\s*/, '').trim();
+      return withoutEmoji || null;
     }
   }
   return null;
