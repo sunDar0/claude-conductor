@@ -297,9 +297,9 @@ TaskModal은 다음과 같은 향상된 기능을 제공합니다:
 
 ## MCP 도구 참고서
 
-Claude Conductor는 작업 오케스트레이션 및 관리를 위한 26개의 MCP 도구를 제공합니다.
+Claude Conductor는 작업 오케스트레이션 및 관리를 위한 30개의 MCP 도구를 제공합니다.
 
-### 작업 관리 (5개 도구)
+### 작업 관리 (7개 도구)
 
 ```
 task_create       컨텍스트와 함께 새 작업 생성
@@ -307,6 +307,8 @@ task_list         필터를 포함한 모든 작업 나열
 task_get          자세한 작업 정보 조회
 task_start        작업을 READY에서 IN_PROGRESS로 전환
 task_transition   작업을 상태 간 전환 (IN_PROGRESS → REVIEW → DONE → CLOSED)
+task_delete       작업 삭제 (READY 또는 BACKLOG 상태만 가능)
+task_hide         작업 숨김/표시 토글
 ```
 
 **예시:**
@@ -345,21 +347,14 @@ server_open       브라우저에서 서버 URL 열기
 api_docs          API 문서 생성
 ```
 
-### 품질 및 검토 (4개 도구)
-
-```
-review_code       자동화된 코드 검토 수행 (린팅, 타입 체크, 테스트)
-changelog_generate 커밋에서 CHANGELOG 생성
-```
-
-### 리뷰 및 프롬프트 (추가 도구)
+### 품질 및 검토 (2개 도구)
 
 ```
 review_code       AI 기반 코드 품질 리뷰 수행
-review_security   AI 기반 보안 취약점 리뷰 수행
+changelog_generate 커밋에서 CHANGELOG 생성
 ```
 
-### 에이전트 오케스트레이션 (7개 도구)
+### 에이전트 오케스트레이션 (9개 도구)
 
 ```
 agent_spawn       새 에이전트 생성 및 시작
@@ -435,8 +430,7 @@ claude-conductor/
 │   └── tasks/                     # 작업 데이터 (gitignored)
 ├── insomniac-claude.sh            # macOS 절전 방지 스크립트
 ├── start.sh                       # 빠른 시작 스크립트
-├── README.md                      # 이 파일
-└── spec/                          # 설계 사양 문서
+└── README.md                      # 이 파일
 ```
 
 ### 개발 스크립트
@@ -508,7 +502,7 @@ WS_PORT=3101
 
 # Claude AI 설정
 CLAUDE_API_KEY=sk-your-api-key-here
-CLAUDE_MODEL=claude-opus-4-5-20251101
+CLAUDE_MODEL=claude-sonnet-4-6
 
 # 파이프라인 설정
 AUTO_START_PIPELINE=false  # true로 설정 시 READY 작업 자동 실행 (기본값: false, 수동 트리거)

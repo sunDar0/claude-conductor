@@ -12,7 +12,7 @@ cd conductor-mcp/services/dashboard && pnpm run dev     # Vite dev server
 
 # 빌드
 cd conductor-mcp/services/conductor && pnpm run build   # tsup
-cd conductor-mcp/services/dashboard && tsc && pnpm run build  # vite build
+cd conductor-mcp/services/dashboard && pnpm run build         # vite build
 
 # 테스트
 cd conductor-mcp/services/conductor && pnpm test        # vitest
@@ -26,10 +26,18 @@ cd conductor-mcp/services/conductor && pnpm test        # vitest
 
 ### Task 상태 머신 (위반 시 장애)
 ```
-BACKLOG → READY → IN_PROGRESS → REVIEW ⇄ IN_PROGRESS
-                                    ↓
-                                  DONE → CLOSED
+BACKLOG ⇄ READY → IN_PROGRESS → REVIEW ⇄ IN_PROGRESS
+  ↓         ↓         ↓           ↓   ↘
+DONE ← ── DONE      CLOSED      DONE   READY/BACKLOG
+  ↓
+CLOSED
 ```
+- BACKLOG: → READY, DONE, CLOSED
+- READY: → IN_PROGRESS, BACKLOG, DONE, CLOSED
+- IN_PROGRESS: → REVIEW, READY, CLOSED
+- REVIEW: → DONE, IN_PROGRESS, READY, BACKLOG
+- DONE: → BACKLOG, READY, CLOSED
+- CLOSED: (terminal)
 - `VALID_TRANSITIONS` (`task.types.ts`)만 허용. 상태 건너뛰기 금지
 - REVIEW → IN_PROGRESS 거절 시 반드시 `feedback` 필수
 - REVIEW → DONE 전환 시 CHANGELOG 자동 생성됨
