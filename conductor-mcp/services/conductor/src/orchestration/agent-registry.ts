@@ -3,6 +3,9 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { parse as parseYaml } from 'yaml';
 import type { AgentDefinition, AgentRole, AgentSourceType } from '../types/agent.types.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('AgentRegistry');
 
 export class AgentRegistry {
   private definitions: Map<AgentRole, AgentDefinition> = new Map();
@@ -44,7 +47,7 @@ export class AgentRegistry {
 
     this.buildRoleMapping();
 
-    console.error(`[AgentRegistry] Loaded ${this.definitions.size} agent definitions (source: ${this.currentSource})`);
+    log.info({ count: this.definitions.size, source: this.currentSource }, 'Loaded agent definitions');
   }
 
   private async loadFromDirectory(dir: string, source: string): Promise<void> {
@@ -58,9 +61,9 @@ export class AgentRegistry {
           const content = await readFile(join(dir, file), 'utf-8');
           const definition = parseYaml(content) as AgentDefinition;
           this.definitions.set(definition.role, definition);
-          console.error(`[AgentRegistry] Loaded ${definition.role} from ${source}:${file}`);
+          log.debug({ role: definition.role, source, file }, 'Loaded agent definition');
         } catch (err) {
-          console.error(`[AgentRegistry] Failed to load ${source}:${file}:`, err);
+          log.error({ err, source, file }, 'Failed to load agent definition');
         }
       }
 
@@ -70,11 +73,11 @@ export class AgentRegistry {
         try {
           await this.loadMarkdownAgent(dir, file, source);
         } catch (err) {
-          console.error(`[AgentRegistry] Failed to load ${source}:${file}:`, err);
+          log.error({ err, source, file }, 'Failed to load agent definition');
         }
       }
-    } catch {
-      // 디렉토리 없음 — 무시
+    } catch (err) {
+      log.debug({ err, dir }, 'Agents directory not found, skipping');
     }
   }
 
@@ -119,7 +122,7 @@ export class AgentRegistry {
     };
 
     this.definitions.set(role, definition);
-    console.error(`[AgentRegistry] Loaded ${role} agent from ${source}:${filename}`);
+    log.debug({ role, source, filename }, 'Loaded agent from markdown');
   }
 
   private loadOmcDefinitions(): void {
@@ -349,21 +352,6 @@ export class AgentRegistry {
     return Array.from(this.definitions.values());
   }
 
-  listRoles(): AgentRole[] {
-    return Array.from(this.definitions.keys());
-  }
-
-  hasRole(role: AgentRole): boolean {
-    return this.definitions.has(role);
-  }
-
-  registerCustomAgent(definition: AgentDefinition): void {
-    if (definition.role !== 'custom') {
-      throw new Error('Dynamic registration only allowed for custom role');
-    }
-    this.definitions.set(definition.role, definition);
-  }
-
   getCurrentSource(): AgentSourceType {
     return this.currentSource;
   }
@@ -409,8 +397,8 @@ export class AgentRegistry {
         sources.push('omc');
         hasOmc = true;
       }
-    } catch {
-      // no settings or parse error
+    } catch (err) {
+      log.debug({ err }, 'Could not read omc settings');
     }
 
     // Check global agents
@@ -420,8 +408,8 @@ export class AgentRegistry {
       if (files.some(f => f.endsWith('.md') || f.endsWith('.yaml'))) {
         sources.push('global');
       }
-    } catch {
-      // no global agents dir
+    } catch (err) {
+      log.debug({ err }, 'No global agents directory found');
     }
 
     // Check project agents
@@ -432,8 +420,8 @@ export class AgentRegistry {
         if (files.some(f => f.endsWith('.md') || f.endsWith('.yaml'))) {
           sources.push('project');
         }
-      } catch {
-        // no project agents dir
+      } catch (err) {
+        log.debug({ err }, 'No project agents directory found');
       }
     }
 

@@ -9,6 +9,9 @@ import type {
 } from '../types/agent.types.js';
 import { AgentManager } from './agent-manager.js';
 import { AgentExecutor } from './agent-executor.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('ParallelEngine');
 
 export class ParallelEngine extends EventEmitter {
   private manager: AgentManager;
@@ -40,7 +43,7 @@ export class ParallelEngine extends EventEmitter {
 
     try {
       for (const stage of plan.stages) {
-        console.error(`[ParallelEngine] Executing stage: ${stage.name} (shared keys: ${Object.keys(stageShared).join(', ')})`);
+        log.info({ stage: stage.name, sharedKeys: Object.keys(stageShared) }, 'Executing stage');
 
         const stageResults = stage.parallel
           ? await this.executeParallel(plan.task_id, stage, stageShared)
@@ -58,7 +61,7 @@ export class ParallelEngine extends EventEmitter {
 
         const hasError = stageResults.some(r => r.status === 'failed');
         if (hasError) {
-          console.warn(`[ParallelEngine] Stage ${stage.name} has failures`);
+          log.warn({ stage: stage.name }, 'Stage has failures');
         }
       }
 
@@ -71,7 +74,7 @@ export class ParallelEngine extends EventEmitter {
 
     } catch (error) {
       plan.status = 'failed';
-      console.error('[ParallelEngine] Plan execution failed:', error instanceof Error ? error.stack : error);
+      log.error({ err: error instanceof Error ? { message: error.message, stack: error.stack } : error }, 'Plan execution failed');
       this.emit('plan:failed', { planId: plan.id, error });
       throw error;
     } finally {
@@ -84,7 +87,7 @@ export class ParallelEngine extends EventEmitter {
     stage: OrchestrationStage,
     stageShared: Record<string, unknown>,
   ): Promise<AgentResult[]> {
-    console.error(`[ParallelEngine] Running ${stage.agents.length} agents in parallel`);
+    log.info({ agentCount: stage.agents.length }, 'Running agents in parallel');
 
     const promises = stage.agents.map(async (agentConfig) => {
       const taskCtx = this.currentTaskContext || { title: '', description: '', related_files: [] };
@@ -119,7 +122,7 @@ export class ParallelEngine extends EventEmitter {
       if (r.status === 'fulfilled') {
         return r.value;
       } else {
-        console.error(`[ParallelEngine] Agent ${stage.agents[i].role} failed:`, r.reason);
+        log.error({ role: stage.agents[i].role, err: r.reason }, 'Agent failed in parallel stage');
         return {
           agent_id: `failed-${i}`,
           role: stage.agents[i].role,
@@ -139,7 +142,7 @@ export class ParallelEngine extends EventEmitter {
     stage: OrchestrationStage,
     stageShared: Record<string, unknown>,
   ): Promise<AgentResult[]> {
-    console.error(`[ParallelEngine] Running ${stage.agents.length} agents sequentially`);
+    log.info({ agentCount: stage.agents.length }, 'Running agents sequentially');
 
     const results: AgentResult[] = [];
     let previousResult: AgentResult | null = null;
@@ -175,7 +178,7 @@ export class ParallelEngine extends EventEmitter {
       previousResult = result;
 
       if (result.status === 'failed') {
-        console.warn(`[ParallelEngine] Agent ${instance.id} failed, stopping sequence`);
+        log.warn({ agentId: instance.id }, 'Agent failed, stopping sequence');
         break;
       }
     }
@@ -203,7 +206,7 @@ export class ParallelEngine extends EventEmitter {
         workDir: this.currentWorkDir,
         onProgress: (event) => {
           if (this.publishEvent) {
-            this.publishEvent('pipeline:output', {
+            this.publishEvent('pipeline.output', {
               task_id: taskId,
               event_type: event.type,
               output: `[${instance.role}] ${event.content}`,
@@ -451,16 +454,4 @@ export class ParallelEngine extends EventEmitter {
     return summary;
   }
 
-  getActivePlan(planId: string): OrchestrationPlan | undefined {
-    return this.activePlans.get(planId);
-  }
-
-  cancelPlan(planId: string): void {
-    const plan = this.activePlans.get(planId);
-    if (plan) {
-      plan.status = 'failed';
-      this.activePlans.delete(planId);
-      this.emit('plan:cancelled', { planId });
-    }
-  }
 }

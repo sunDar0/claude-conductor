@@ -1,6 +1,9 @@
 import { readFile, access } from 'fs/promises';
 import { join } from 'path';
 import type { AgentDefinition } from '../types/agent.types.js';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('SkillLoader');
 
 export class SkillLoader {
   private skillsDir: string;
@@ -41,33 +44,11 @@ export class SkillLoader {
         if (definition.skills.required.includes(skillName)) {
           throw error;
         }
-        console.warn(`[SkillLoader] Optional skill not found: ${skillName}`);
+        log.warn({ skillName }, 'Optional skill not found, skipping');
       }
     }
 
     return skills;
   }
 
-  buildSystemPrompt(definition: AgentDefinition, skills: Record<string, string>): string {
-    let prompt = definition.system_prompt;
-
-    const skillsSection = Object.entries(skills)
-      .map(([name, content]) => `### Skill: ${name}\n\n${content}`)
-      .join('\n\n---\n\n');
-
-    prompt = prompt.replace('{{skills}}', skillsSection);
-    prompt = prompt.replace('{{role}}', definition.role);
-    prompt = prompt.replace('{{name}}', definition.name);
-
-    const constraintsSection = definition.constraints
-      .map(c => `- ${c}`)
-      .join('\n');
-    prompt = prompt.replace('{{constraints}}', constraintsSection);
-
-    return prompt;
-  }
-
-  clearCache(): void {
-    this.cache.clear();
-  }
 }

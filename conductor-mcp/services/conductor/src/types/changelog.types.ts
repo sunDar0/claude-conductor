@@ -39,19 +39,3 @@ export interface ParsedCommit {
   description: string;
 }
 
-/**
- * Conventional Commit → Changelog 타입 매핑
- */
-export const COMMIT_TO_CHANGELOG: Record<string, ChangeType> = {
-  feat: 'Added',
-  fix: 'Fixed',
-  docs: 'Changed',
-  style: 'Changed',
-  refactor: 'Changed',
-  perf: 'Changed',
-  test: 'Changed',
-  chore: 'Changed',
-  security: 'Security',
-  deprecate: 'Deprecated',
-  remove: 'Removed',
-};

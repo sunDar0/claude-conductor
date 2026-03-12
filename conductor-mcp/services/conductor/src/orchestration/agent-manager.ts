@@ -9,6 +9,9 @@ import type {
 import { AgentRegistry } from './agent-registry.js';
 import { SkillLoader } from './skill-loader.js';
 import type { Redis } from 'ioredis';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('AgentManager');
 
 export class AgentManager extends EventEmitter {
   private instances: Map<string, AgentInstance> = new Map();
@@ -55,7 +58,7 @@ export class AgentManager extends EventEmitter {
         },
       });
     } catch (err) {
-      console.warn(`[AgentManager] Failed to load some skills:`, err);
+      log.warn({ err }, 'Failed to load some skills');
     }
 
     const agentId = `agent-${role}-${Date.now()}-${uuid().slice(0, 8)}`;
@@ -94,7 +97,7 @@ export class AgentManager extends EventEmitter {
       timestamp: new Date().toISOString(),
     }));
 
-    console.error(`[AgentManager] Spawned ${role} agent: ${agentId}`);
+    log.info({ role, agentId }, 'Agent spawned');
     return instance;
   }
 
@@ -157,7 +160,7 @@ export class AgentManager extends EventEmitter {
       timestamp: new Date().toISOString(),
     }));
 
-    console.error(`[AgentManager] Agent completed: ${agentId}`);
+    log.info({ agentId }, 'Agent completed');
   }
 
   async fail(agentId: string, error: string): Promise<void> {
@@ -178,7 +181,7 @@ export class AgentManager extends EventEmitter {
       timestamp: new Date().toISOString(),
     }));
 
-    console.error(`[AgentManager] Agent failed: ${agentId} - ${error}`);
+    log.error({ agentId, error }, 'Agent failed');
   }
 
   async terminate(agentId: string): Promise<void> {
@@ -202,7 +205,7 @@ export class AgentManager extends EventEmitter {
       this.instances.delete(agentId);
     }, 60000);
 
-    console.error(`[AgentManager] Agent terminated: ${agentId}`);
+    log.info({ agentId }, 'Agent terminated');
   }
 
   getInstance(agentId: string): AgentInstance | undefined {
@@ -212,16 +215,6 @@ export class AgentManager extends EventEmitter {
   getInstancesByTask(taskId: string): AgentInstance[] {
     return Array.from(this.instances.values())
       .filter(i => i.task_id === taskId);
-  }
-
-  getInstancesByRole(role: AgentRole): AgentInstance[] {
-    return Array.from(this.instances.values())
-      .filter(i => i.role === role);
-  }
-
-  getRunningInstances(): AgentInstance[] {
-    return Array.from(this.instances.values())
-      .filter(i => i.status === 'running');
   }
 
   getAllInstances(): AgentInstance[] {
@@ -250,6 +243,6 @@ export class AgentManager extends EventEmitter {
         this.instances.set(instance.id, instance);
       }
     }
-    console.error(`[AgentManager] Restored ${this.instances.size} agent instances`);
+    log.info({ count: this.instances.size }, 'Restored agent instances');
   }
 }

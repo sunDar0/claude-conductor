@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import type { Task, TaskStatus, TaskPriority } from '../types/index.js';
 import { VALID_TRANSITIONS, STATUS_EMOJI, PRIORITY_EMOJI } from '../types/task.types.js';
 import { readTaskRegistry, writeTaskRegistry, getTaskContextPath, getTaskDirPath, getCurrentProjectId } from '../utils/registry.js';
-import { nowISO, formatKorean, formatDateOnly, calculateDuration } from '../utils/date.js';
+import { nowISO, formatKorean, formatDateOnly } from '../utils/date.js';
 import { ensureDir } from '../utils/file.js';
 import { taskHandlerLogger as log } from '../utils/logger.js';
 import { createActivity } from '../utils/activity.js';

@@ -2,18 +2,6 @@
 // Agent 관련 타입 정의
 // ===========================================
 
-// Built-in roles for reference. AgentRole is string to support omc/global/project agent sources.
-export type BuiltInAgentRole =
-  | 'code'
-  | 'test'
-  | 'review'
-  | 'docs'
-  | 'security'
-  | 'performance'
-  | 'frontend'
-  | 'backend'
-  | 'custom';
-
 export type AgentRole = string;
 
 export type AgentStatus =
